@@ -1,212 +1,407 @@
-<!DOCTYPE html>
+<!doctype html>
+<!-- Créditos do Higgsfield, limites, link do app e dados da empresa: edite /landing/assets/config.js (não precisa mexer neste arquivo). -->
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Character Direct · Higgsfield Genjutsu Studio</title>
-  <link rel="stylesheet" href="styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Character · Grátis: troque a pessoa de um vídeo pelo seu personagem</title>
+  <meta name="description" content="Comece grátis. Pegue um vídeo que já viralizou no TikTok ou no Instagram, escolha o personagem e receba o vídeo pronto em 1080p, com o áudio original. Você entra com a sua conta Higgsfield e usa os créditos dela.">
+  <meta name="theme-color" content="#0b0b0d">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="pt_BR">
+  <meta property="og:title" content="Character · Grátis: troque a pessoa de um vídeo pelo seu personagem">
+  <meta property="og:description" content="Do link do TikTok ou do Instagram ao vídeo pronto em 1080p, com o áudio original. Comece grátis: você entra com a sua conta Higgsfield.">
+  <meta property="og:url" content="https://app.charactersschool.com/">
+  <meta property="og:image" content="https://app.charactersschool.com/landing/assets/og.jpg">
+  <link rel="canonical" href="https://app.charactersschool.com/">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/landing/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@400..600&family=Fraunces:opsz,wght,SOFT,WONK@9..144,900,100,1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/landing/landing.css">
+  <link rel="preload" as="image" href="/landing/assets/demo-poster.jpg">
+  <script src="/landing/assets/config.js"></script>
 </head>
 <body>
+  <a class="skip" href="#conteudo">Pular para o conteúdo</a>
 
-  <header>
-    <div class="brand">
-      <span class="dot"></span>
-      <span>Character Direct</span>
-      <span class="brand-badge">Higgsfield Genjutsu</span>
-    </div>
-    <div class="header-right">
-      <span id="apiStatusPill" class="brand-badge" style="background: rgba(255, 77, 77, 0.1); color: #ff5555; border-color: rgba(255,77,77,0.3)">
-        Chave Não Configurada
-      </span>
-      <button class="btn" id="openConfigBtn">⚙️ Configurações da API</button>
+  <header class="top">
+    <div class="wrap top__in">
+      <a class="brand" href="#topo" aria-label="Character, início"><span class="brand__word">Character</span></a>
+      <nav class="top__nav" aria-label="Seções">
+        <a href="#o-que-faz">O que faz</a>
+        <a href="#como-funciona">Como funciona</a>
+        <a href="#preco">Preço</a>
+        <a href="#perguntas">Dúvidas</a>
+      </nav>
+      <div class="top__right">
+        <a class="btn btn--quiet btn--sm" data-app href="/app">Entrar</a>
+        <a class="btn btn--primary btn--sm" data-app href="/app"><span>Começar<span class="hide-sm"> grátis</span></span></a>
+      </div>
     </div>
   </header>
 
-  <main>
-    <div class="banner-notice">
-      <div>
-        <strong>Direto da Fonte (Sem Intermediários):</strong> Este sistema conecta diretamente à sua conta oficial do Higgsfield. Seus vídeos são gerados pelo modelo oficial <code>genjutsu/motion-transfer/v1.0</code> sem taxas de R$ 49,90 e sem links de afiliados!
+  <main id="conteudo">
+    <!-- ============ TOPO ============ -->
+    <section class="hero" id="topo" data-hide-sticky>
+      <div class="wrap hero__grid">
+        <div class="hero__copy">
+          <span class="eyebrow"><i class="dot"></i>Grátis · use com o seu Higgsfield</span>
+          <h1 class="display hero__title">Pegue um vídeo que já viralizou e coloque o <span class="hl">seu personagem</span> no lugar.</h1>
+          <p class="lead">Cole o link do TikTok ou do Instagram, escolha o personagem e receba o vídeo pronto em 1080p: mesma cena, mesmo movimento, áudio original. Comece grátis: você entra com a sua conta Higgsfield e os vídeos usam os créditos dela.</p>
+          <div class="hero__cta">
+            <a class="btn btn--primary btn--big" data-app href="/app">Começar grátis</a>
+            <a class="enter" data-app href="/app">Já tenho conta: <b>entrar</b> <span aria-hidden="true">→</span></a>
+          </div>
+          <ul class="ticks">
+            <li>Comece grátis, sem mensalidade</li>
+            <li>Gera na sua conta Higgsfield, com os créditos dela</li>
+            <li>No navegador, sem instalar nada</li>
+          </ul>
+        </div>
+
+        <div class="hero__demo">
+          <figure class="phone">
+            <video data-demo autoplay muted loop playsinline preload="auto" poster="/landing/assets/demo-poster.jpg" width="720" height="1280" aria-label="Exemplo: o personagem Vector no lugar de uma pessoa, descendo a escada ao lado de outra pessoa">
+              <source src="/landing/assets/demo.mp4" type="video/mp4">
+            </video>
+            <div class="phone__chips">
+              <span class="chip chip--ok"><i class="dot dot--live"></i>Feito no Character</span>
+              <span class="chip">IA</span>
+            </div>
+          </figure>
+
+          <div class="mini" aria-hidden="true">
+            <div class="mini__row">
+              <img src="/landing/assets/vector-1.webp" alt="" width="40" height="53">
+              <div class="mini__txt"><span class="mini__k">Personagem</span><b>Vector</b></div>
+              <span class="badge badge--mint">pronto</span>
+            </div>
+            <div class="mini__row mini__row--plain">
+              <span class="mini__k">Vídeo</span><b class="pixel">escada.mp4 · 9 s</b>
+            </div>
+            <div class="gen-btn">Gerar <span class="gen-btn__cost"><span data-credits-for="9">99</span>&nbsp;cr</span></div>
+          </div>
+        </div>
       </div>
-    </div>
+      <p class="wrap hero__note">Vídeo gerado com IA no Character. O personagem Vector entrou no lugar de uma pessoa do vídeo original.</p>
+    </section>
 
-    <div class="grid-studio">
-      <!-- 1. ESCOLHA DO PERSONAGEM -->
-      <section class="panel">
-        <div class="panel-header">
-          <span class="step-badge" id="step1Badge">1</span>
-          <h2 class="panel-title">Seu Personagem</h2>
+    <!-- ============ NÚMEROS ============ -->
+    <section class="stats" aria-label="Resumo">
+      <div class="wrap stats__grid">
+        <div class="stat"><b>Grátis</b><span>para começar, com os créditos do seu Higgsfield</span></div>
+        <div class="stat"><b>1080p</b><span>Higgsfield Genjutsu, com a cena original</span></div>
+        <div class="stat"><b>Até <span data-num="limiteSegundos">60</span> s</b><span>por vídeo, entregue numa peça só</span></div>
+        <div class="stat"><b>Por link</b><span>do TikTok e do Instagram, com o áudio original</span></div>
+      </div>
+    </section>
+
+    <!-- ============ O QUE FAZ ============ -->
+    <section class="sec" id="o-que-faz">
+      <div class="wrap">
+        <div class="sec__head">
+          <span class="kicker">O que ele faz</span>
+          <h2 class="display sec__title">O trabalho chato fica com o Character.</h2>
+          <p class="sec__lead">O método é simples: pegar um vídeo que já deu certo e colocar o seu personagem no lugar da pessoa. O Character faz tudo o que você faria à mão para isso, na ordem certa, sem pular etapa.</p>
         </div>
 
-        <div class="char-grid" id="charList">
-          <!-- Carregado via JS -->
+        <div class="feats">
+          <article class="feat">
+            <span class="feat__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span>
+            <h3 class="feat__title">Baixa pelo link</h3>
+            <p>Cole o link de um vídeo público do TikTok ou do Instagram e o Character baixa na melhor qualidade que a plataforma entrega, até 1080p. Também dá para enviar o arquivo do computador ou do celular.</p>
+          </article>
+          <article class="feat">
+            <span class="feat__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8.1 8.1 20 20M14.5 9.5 20 4M8.1 15.9l2.4-2.4"/></svg></span>
+            <h3 class="feat__title">Vídeo longo sai inteiro</h3>
+            <p>Cada geração aceita cerca de 30 segundos. O Character divide o vídeo nas pausas da fala, troca cada parte e emenda tudo de volta com o áudio original. Você baixa um arquivo só, sem corte no meio de uma palavra.</p>
+          </article>
+          <article class="feat">
+            <span class="feat__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6l-8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></span>
+            <h3 class="feat__title">Menos erro que à mão</h3>
+            <p>Cortar, enviar, esperar, baixar, alinhar e emendar parte por parte é onde os erros aparecem. O Character faz cada etapa do mesmo jeito, toda vez, e acerta a duração de cada parte para o áudio continuar batendo.</p>
+          </article>
+          <article class="feat">
+            <span class="feat__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.2-4 4.2-6 8-6s6.8 2 8 6"/><path d="M19 3v4M17 5h4"/></svg></span>
+            <h3 class="feat__title">Personagens consistentes</h3>
+            <p>Descreva o personagem e o Character cria as imagens de referência com GPT Image 2.5: a principal, de frente, de perfil e de três quartos, com o mesmo rosto e o mesmo cabelo. Ou comece pelos personagens prontos da biblioteca.</p>
+          </article>
+          <article class="feat">
+            <span class="feat__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 14h4M8 17h7"/></svg></span>
+            <h3 class="feat__title">Fila e galeria</h3>
+            <p>Acompanhe cada vídeo na fila, com a previsão de espera, e encontre os prontos na galeria para assistir e baixar por <span data-num="diasNaGaleria">30</span> dias. Pode fechar a página: o vídeo continua sendo feito.</p>
+          </article>
+          <article class="feat">
+            <span class="feat__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18M16 15h2"/><path d="M7 6V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1"/></svg></span>
+            <h3 class="feat__title">Créditos antes de gerar</h3>
+            <p>Antes de confirmar, você vê quantos créditos do seu Higgsfield aquele vídeo usa, e o app confere se o seu saldo cobre. Se os créditos acabarem no meio, os vídeos esperam na fila até você adicionar mais no Higgsfield.</p>
+          </article>
         </div>
+      </div>
+    </section>
 
-        <button class="btn" id="openNewCharBtn" style="width: 100%; justify-content: center; margin-top: 8px;">
-          + Novo Personagem (Upload de Fotos)
-        </button>
-      </section>
-
-      <!-- 2. VÍDEO BASE -->
-      <section class="panel">
-        <div class="panel-header">
-          <span class="step-badge" id="step2Badge">2</span>
-          <h2 class="panel-title">Vídeo Base (TikTok / Reels / Upload)</h2>
+    <!-- ============ PERSONAGENS ============ -->
+    <section class="sec sec--alt" id="personagens">
+      <div class="wrap chars">
+        <div class="chars__copy">
+          <span class="kicker">Personagens</span>
+          <h2 class="display sec__title">O mesmo rosto em todos os ângulos.</h2>
+          <p class="sec__lead">A troca só convence se o personagem for o mesmo do primeiro ao último quadro. Por isso o Character cria as referências juntas, a partir da mesma imagem de frente, e manda todas para a troca.</p>
+          <ul class="checks">
+            <li>Crie a partir de uma descrição, em poucos minutos</li>
+            <li>Use os personagens prontos da biblioteca</li>
+            <li>Os seus personagens ficam só na sua conta</li>
+          </ul>
         </div>
+        <div class="chars__media">
+          <div class="angles">
+            <figure class="card-img"><img src="/landing/assets/vector-1.webp" alt="Vector, imagem principal" width="480" height="640" loading="lazy" decoding="async"></figure>
+            <figure class="card-img"><img src="/landing/assets/vector-2.webp" alt="Vector de frente" width="480" height="640" loading="lazy" decoding="async"></figure>
+            <figure class="card-img"><img src="/landing/assets/vector-3.webp" alt="Vector de perfil" width="480" height="640" loading="lazy" decoding="async"></figure>
+            <figure class="card-img"><img src="/landing/assets/vector-4.webp" alt="Vector de três quartos" width="480" height="640" loading="lazy" decoding="async"></figure>
+          </div>
+          <p class="cap">Vector, criado no Character com GPT Image 2.5.</p>
+          <div class="more-chars">
+            <figure class="card-img card-img--sm"><img src="/landing/assets/card-rockfelly.webp" alt="Personagem de bigode e terno azul" width="360" height="480" loading="lazy" decoding="async"></figure>
+            <figure class="card-img card-img--sm"><img src="/landing/assets/card-lebon.webp" alt="Personagem de monóculo e paletó xadrez" width="360" height="480" loading="lazy" decoding="async"></figure>
+            <figure class="card-img card-img--sm"><img src="/landing/assets/card-mykonos.webp" alt="Personagem careca de regata amarela" width="360" height="480" loading="lazy" decoding="async"></figure>
+          </div>
+          <p class="cap">Outros personagens criados no Character.</p>
+        </div>
+      </div>
+    </section>
 
-        <div class="form-group">
-          <label class="form-label">Cole o link público do TikTok ou Instagram:</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="url" id="socialUrlInput" class="input" placeholder="https://www.tiktok.com/@user/video/...">
-            <button class="btn btn-primary" id="downloadSocialBtn">Baixar</button>
+    <!-- ============ À MÃO x CHARACTER ============ -->
+    <section class="sec" id="comparar">
+      <div class="wrap">
+        <div class="sec__head">
+          <span class="kicker">Sem editor, sem emenda manual</span>
+          <h2 class="display sec__title">Você escolhe. O&nbsp;Character faz o resto.</h2>
+        </div>
+        <div class="vs">
+          <div class="vs__col vs__col--manual">
+            <h3 class="vs__title">Fazendo à mão</h3>
+            <ol class="vs__list">
+              <li>Baixar o vídeo e conferir se veio na qualidade certa</li>
+              <li>Cortar em partes de até 30 s sem cortar uma palavra no meio</li>
+              <li>Enviar parte por parte e esperar cada uma</li>
+              <li>Baixar, acertar a duração e emendar na ordem</li>
+              <li>Recolocar o áudio original e exportar</li>
+            </ol>
+            <p class="vs__foot">Uma parte fora do tempo e a fala deixa de bater com a boca.</p>
+          </div>
+          <div class="vs__col vs__col--app">
+            <h3 class="vs__title"><span class="brand__word brand__word--sm">Character</span></h3>
+            <ol class="vs__list">
+              <li>Cole o link ou envie o arquivo</li>
+              <li>Escolha o personagem</li>
+              <li>Confira os créditos do seu Higgsfield e clique em gerar</li>
+              <li>Baixe um vídeo só, inteiro, com o áudio original</li>
+            </ol>
+            <p class="vs__foot">O corte, a troca, a emenda e o acabamento ficam com o Character.</p>
           </div>
         </div>
+      </div>
+    </section>
 
-        <div class="dropzone" id="videoDropzone">
-          <div style="font-size: 1.8rem; margin-bottom: 6px;">📹</div>
-          <strong style="display: block; font-size: 0.95rem;">Arraste ou selecione seu vídeo MP4/MOV</strong>
-          <span style="font-size: 0.8rem; color: var(--text-muted);">Até 30-60 segundos (1080p suportado)</span>
-          <input type="file" id="videoFileInput" accept="video/mp4,video/quicktime,video/webm" style="display: none;">
+    <!-- ============ COMO FUNCIONA ============ -->
+    <section class="sec sec--alt" id="como-funciona">
+      <div class="wrap">
+        <div class="sec__head">
+          <span class="kicker">Como funciona</span>
+          <h2 class="display sec__title">Quatro passos, da sua conta Higgsfield ao vídeo pronto.</h2>
+        </div>
+        <ol class="steps">
+          <li class="step">
+            <span class="step-num">1</span>
+            <h3 class="step__title">Crie sua conta no Higgsfield</h3>
+            <p>Crie a sua conta no Higgsfield pelo link abaixo e assine um plano pago (o Starter já serve). A conta grátis (Free) e o teste grátis do plano não criam personagem por aplicativos. Já tem conta com plano pago? Siga para o passo 2.</p>
+            <a class="btn btn--sm step__cta" data-signup href="https://higgsfield.ai" target="_blank" rel="noopener sponsored">Criar conta no Higgsfield <span aria-hidden="true">↗</span></a>
+          </li>
+          <li class="step">
+            <span class="step-num">2</span>
+            <h3 class="step__title">Entre com a sua conta Higgsfield</h3>
+            <p>Clique em Entrar com o Higgsfield e faça o login oficial, no site do Higgsfield. A gente nunca vê a sua senha. Ao entrar, a sua conta já fica conectada para gerar.</p>
+          </li>
+          <li class="step">
+            <span class="step-num">3</span>
+            <h3 class="step__title">Escolha o personagem e o vídeo</h3>
+            <p>Cole o link do TikTok ou do Instagram, ou envie o arquivo, com até <span data-num="limiteSegundos">60</span> segundos. Pegue um personagem da biblioteca ou crie o seu.</p>
+          </li>
+          <li class="step">
+            <span class="step-num">4</span>
+            <h3 class="step__title">Gere e baixe</h3>
+            <p>Os créditos do seu Higgsfield aparecem antes de gerar. Quando ficar pronto, o vídeo chega na galeria em 1080p, com o áudio original.</p>
+          </li>
+        </ol>
+        <p class="note">Cada parte de até 30 s leva em média uns 15 minutos para ficar pronta. A previsão de espera aparece na fila.</p>
+      </div>
+    </section>
+
+    <!-- ============ PREÇO ============ -->
+    <section class="sec" id="preco" data-hide-sticky>
+      <div class="wrap">
+        <div class="sec__head sec__head--center">
+          <span class="kicker">Preço</span>
+          <h2 class="display sec__title">Comece grátis com a sua conta Higgsfield.</h2>
+          <p class="sec__lead">Os vídeos e os personagens são gerados na sua conta Higgsfield e usam os créditos dela, que você compra no próprio Higgsfield, com um plano assinado lá. A gente não vende créditos. No Character, os <span data-num="hospedagem.videosGratis">3</span> primeiros vídeos são grátis; depois, a hospedagem dos vídeos custa <span data-num="hospedagem.preco">R$ 49,90</span>, uma vez só.</p>
         </div>
 
-        <div class="video-preview" id="videoPreviewBox" style="display: none;">
-          <video id="baseVideoPlayer" controls playsinline></video>
-          <div style="padding: 8px; font-size: 0.8rem; color: var(--text-muted); display: flex; justify-content: space-between;">
-            <span id="videoDurationLabel">Duração: -- s</span>
-            <span style="color: var(--accent);">✓ Pronto para troca</span>
-          </div>
-        </div>
-      </section>
+        <div class="pricing">
+          <article class="plan">
+            <div class="plan__head">
+              <span class="label">Character</span>
+              <span class="badge badge--4k">Acesso completo</span>
+            </div>
+            <div class="plan__price">
+              <span class="plan__big">Grátis</span>
+              <span class="plan__unit">nos <span data-num="hospedagem.videosGratis">3</span> primeiros vídeos</span>
+            </div>
+            <p class="plan__inst">Depois, a hospedagem dos vídeos custa <b><span data-num="hospedagem.preco">R$ 49,90</span>, uma vez só</b>, sem mensalidade. Os créditos de cada vídeo você paga <b>direto no seu Higgsfield</b>.</p>
+            <a class="btn btn--primary btn--big btn--block" data-app href="/app">Começar grátis</a>
+            <p class="plan__safe"><i class="dot"></i><span>Para começar, basta a sua conta Higgsfield com um plano assinado lá.</span></p>
 
-      <!-- 3. CONFIGURAÇÃO E GERAÇÃO -->
-      <section class="panel">
-        <div class="panel-header">
-          <span class="step-badge" id="step3Badge">3</span>
-          <h2 class="panel-title">Gerar Troca (Genjutsu)</h2>
-        </div>
+            <h3 class="plan__inc-title">Tudo incluído</h3>
+            <ul class="checks">
+              <li>O Character pelo navegador, no computador ou no celular</li>
+              <li>Download por link do TikTok e do Instagram</li>
+              <li>Divisão nas pausas da fala e emenda automática</li>
+              <li>Criação de personagens com GPT Image 2.5</li>
+              <li>Biblioteca de personagens prontos</li>
+              <li>Fila com previsão de espera e galeria para baixar</li>
+              <li>Troca com Higgsfield Genjutsu em 1080p, na sua conta Higgsfield</li>
+              <li>Suporte por e-mail</li>
+            </ul>
+          </article>
 
-        <div class="form-group">
-          <label class="form-label">Qualidade do Vídeo:</label>
-          <select id="resolutionSelect" class="select">
-            <option value="1080p">1080p Full HD (11 créditos/s)</option>
-            <option value="720p">720p HD (7 créditos/s)</option>
-          </select>
+          <aside class="cost">
+            <span class="badge badge--coral">No seu Higgsfield</span>
+            <h3 class="cost__title">Quanto custa no Higgsfield.</h3>
+            <p>Cada segundo de vídeo em 1080p usa <span data-credits="creditosPorSegundo">11</span> créditos do seu Higgsfield, com mínimo de <span data-num="minimoSegundos">4</span> s por parte.</p>
+            <div class="cost__big">
+              <span class="cost__pre">um vídeo de <span data-num="exemploSegundos">15</span> s usa</span>
+              <b><span data-credits-for="exemplo">165</span> créditos</b>
+              <span class="cost__unit">do seu Higgsfield, cobrados pelo próprio Higgsfield</span>
+            </div>
+            <ul class="cost__list">
+              <li><span>Cada segundo de vídeo</span><b><span data-credits="creditosPorSegundo">11</span> créditos</b></li>
+              <li><span>Vídeo de <span data-num="exemploSegundos">15</span> s</span><b><span data-credits-for="exemplo">165</span> créditos</b></li>
+              <li data-if="creditosPorImagem"><span>Personagem novo<small><span data-num="imagensPersonagem">4</span> imagens de <span data-credits="creditosPorImagem">15</span> créditos</small></span><b><span data-credits-character>60</span> créditos</b></li>
+            </ul>
+            <p class="cost__fine">Os segundos são contados inteiros, com mínimo de <span data-num="minimoSegundos">4</span> segundos por parte (um vídeo curto usa pelo menos <span data-credits-for="minimo">44</span> créditos). Antes de gerar, o app mostra o total exato e confere se o seu Higgsfield tem créditos suficientes. Quem cobra os créditos é o Higgsfield, pelas regras dele.</p>
+          </aside>
         </div>
+      </div>
+    </section>
 
-        <div class="form-group">
-          <label class="form-label">Instruções Adicionais (Prompt opcional):</label>
-          <textarea id="promptInput" class="textarea" rows="3" placeholder="Ex: photorealistic, preserve all dance motions and facial expressions, studio lighting"></textarea>
+    <!-- ============ PERGUNTAS ============ -->
+    <section class="sec sec--alt" id="perguntas">
+      <div class="wrap faq-wrap">
+        <div class="sec__head">
+          <span class="kicker">Dúvidas</span>
+          <h2 class="display sec__title">Perguntas frequentes</h2>
         </div>
-
-        <div style="margin-top: auto;">
-          <button class="btn btn-primary" id="generateBtn" style="width: 100%; justify-content: center; padding: 14px; font-size: 1rem;" disabled>
-            ⚡ Gerar com Higgsfield Genjutsu
-          </button>
-          <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center; margin-top: 10px;">
-            O áudio original é preservado e sincronizado perfeitamente com FFmpeg.
-          </div>
+        <div class="faq">
+          <details>
+            <summary>Precisa pagar alguma coisa?</summary>
+            <p>Os créditos de cada vídeo e de cada personagem você paga no seu Higgsfield, direto no Higgsfield, com um plano assinado lá. A gente não vende créditos. No Character, os <span data-num="hospedagem.videosGratis">3</span> primeiros vídeos são grátis. Para gerar mais vídeos, você paga uma vez <span data-num="hospedagem.preco">R$ 49,90</span> pela hospedagem dos vídeos, sem mensalidade.</p>
+          </details>
+          <details>
+            <summary>E depois dos vídeos grátis?</summary>
+            <p>Quando você pede um vídeo além dos <span data-num="hospedagem.videosGratis">3</span> grátis sem ter pago a hospedagem, o pedido não sai e a galeria fica fechada: os vídeos continuam guardados, mas não dá para assistir nem baixar até o pagamento. Pague com o mesmo e-mail da sua conta no Character e a galeria abre assim que o pagamento é confirmado. Se pagar com outro e-mail, fale com o suporte. Criar personagens continua liberado.</p>
+          </details>
+          <details>
+            <summary>A minha senha do Higgsfield fica com vocês?</summary>
+            <p>Não. O login é feito no site do Higgsfield e a gente nunca vê a sua senha. Guardamos o e-mail da sua conta Higgsfield, que identifica você no Character, e a autorização de acesso para gerar na sua conta. Você pode desconectar quando quiser, em Configurações, o que apaga essa autorização.</p>
+          </details>
+          <details>
+            <summary>O que acontece se acabarem meus créditos?</summary>
+            <p>O app avisa, e os vídeos na fila esperam até você adicionar créditos no Higgsfield. Depois disso eles continuam sozinhos. Se preferir, você pode cancelar.</p>
+          </details>
+          <details>
+            <summary>Posso usar sem conta Higgsfield?</summary>
+            <p>Não. Precisa de uma conta Higgsfield com um plano assinado e créditos. Crie a sua conta <a data-signup href="https://higgsfield.ai" target="_blank" rel="noopener sponsored">por este link</a>, assine um plano e compre os créditos no site do Higgsfield. Depois, entre no Character com ela.</p>
+          </details>
+          <details>
+            <summary>Funciona com a conta grátis ou com o teste grátis do Higgsfield?</summary>
+            <p>Não. A conta grátis (Free) e o período de teste grátis do plano não criam personagem por aplicativos, e os 10 créditos da conta grátis não pagam nem o menor vídeo (<span data-credits-for="minimo">44</span> créditos). Assine um plano pago no Higgsfield. Se a sua conta estiver no plano grátis, o app avisa antes de você gerar.</p>
+          </details>
+          <details>
+            <summary>Quantos créditos do Higgsfield usa cada vídeo?</summary>
+            <p>Cada segundo de vídeo em 1080p usa <span data-credits="creditosPorSegundo">11</span> créditos (um vídeo de <span data-num="exemploSegundos">15</span> s usa <span data-credits-for="exemplo">165</span> créditos). Os segundos são contados inteiros, com mínimo de <span data-num="minimoSegundos">4</span> segundos por parte.<span data-if="creditosPorImagem"> Um personagem novo usa <span data-credits-character>60</span> créditos (<span data-num="imagensPersonagem">4</span> imagens de <span data-credits="creditosPorImagem">15</span>).</span> O app mostra o total antes de você gerar.</p>
+          </details>
+          <details>
+            <summary>Como eu entro?</summary>
+            <p>Com a sua conta Higgsfield. Se ainda não tem, crie <a data-signup href="https://higgsfield.ai" target="_blank" rel="noopener sponsored">por este link</a> e assine um plano. Entrar já conecta essa conta ao Character, sem nenhum passo a mais. Abra o Character no Safari ou no Chrome, não dentro do Instagram ou do TikTok. Na tela de entrada, clique em Entrar com o Higgsfield e faça o login oficial, no site do Higgsfield. Depois de entrar, aparece uma página que não abre: é normal. Copie o endereço dela, volte para o Character e cole no campo indicado. Pronto: você está dentro, com o saldo de créditos do seu Higgsfield na tela. Você tem 30 minutos para fazer isso; se o tempo acabar, é só clicar em Entrar com o Higgsfield de novo. Não tem senha nova para decorar.</p>
+          </details>
+          <details>
+            <summary>Posso usar no celular?</summary>
+            <p>Pode. O Character funciona no navegador do celular e do computador, sem instalar nada. Para mandar arquivos grandes, o computador costuma ser mais confortável.</p>
+          </details>
+          <details>
+            <summary>Qual o tamanho máximo de cada vídeo?</summary>
+            <p>Até <span data-num="limiteSegundos">60</span> segundos. Cada geração aceita até 29,7 s: um vídeo de até 31 s é ajustado para 29,7 s e sai numa parte só. Os mais longos são divididos nas pausas da fala, trocados por partes e emendados de volta num arquivo só.</p>
+          </details>
+          <details>
+            <summary>E se o vídeo for recusado?</summary>
+            <p>O Higgsfield às vezes recusa um vídeo, por exemplo quando o personagem lembra demais uma obra conhecida ou quando o conteúdo é sensível. O app avisa, e você pode tentar com outro vídeo ou outro personagem. A cobrança dos créditos nesses casos segue as regras do Higgsfield.</p>
+          </details>
+          <details>
+            <summary>Quem pode usar?</summary>
+            <p>Maiores de 18 anos. Ao usar o Character, você segue os <a href="/landing/termos.html">Termos de Uso</a> e as regras de cada plataforma onde publicar.</p>
+          </details>
         </div>
+      </div>
+    </section>
 
-        <!-- Barra de Progresso -->
-        <div class="progress-box" id="progressBox">
-          <div style="display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 600;">
-            <span id="progressStatusLabel">Enviando para o Higgsfield...</span>
-            <span id="progressPercentLabel">--%</span>
-          </div>
-          <div class="progress-bar-wrap">
-            <div class="progress-bar-fill" id="progressBarFill"></div>
-          </div>
-          <span style="font-size: 0.75rem; color: var(--text-muted);" id="progressDetailLabel">A renderização do Genjutsu leva de 2 a 8 minutos.</span>
+    <!-- ============ CHAMADA FINAL ============ -->
+    <section class="final" data-hide-sticky>
+      <div class="wrap final__in">
+        <h2 class="display final__title">Seu personagem nos vídeos que <span class="hl">já viralizaram</span>.</h2>
+        <p class="sec__lead">Comece grátis. Entre com o seu Higgsfield e vá do link ao vídeo pronto em 1080p, com o áudio original.</p>
+        <div class="hero__cta hero__cta--center">
+          <a class="btn btn--primary btn--big" data-app href="/app">Começar grátis</a>
+          <a class="enter" data-app href="/app">Já tenho conta: <b>entrar</b> <span aria-hidden="true">→</span></a>
         </div>
-      </section>
-    </div>
-
-    <!-- 4. RESULTADO E HISTÓRICO -->
-    <section class="history-section">
-      <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 8px;">Galeria de Vídeos Gerados</h2>
-      <p style="font-size: 0.85rem; color: var(--text-muted);">Todos os vídeos são salvos localmente no seu computador e podem ser baixados a qualquer momento sem custos adicionais.</p>
-      
-      <div class="history-grid" id="historyList">
-        <!-- Renderizado dinamicamente -->
       </div>
     </section>
   </main>
 
-  <!-- MODAL: CONFIGURAÇÃO DA API HIGGSFIELD -->
-  <div class="modal-overlay" id="configModal">
-    <div class="modal">
-      <div class="modal-header">
-        <h3 style="font-size: 1.15rem; font-weight: 700;">Configurar Chaves da API Higgsfield</h3>
-        <button class="modal-close" id="closeConfigBtn">&times;</button>
+  <footer class="foot" data-hide-sticky>
+    <div class="wrap foot__grid">
+      <div class="foot__brand">
+        <span class="brand__word">Character</span>
+        <p class="muted small">Troca de personagem em vídeo. Grátis · use com o seu Higgsfield.</p>
+        <a class="btn btn--primary btn--sm foot__cta" data-app href="/app">Começar grátis</a>
       </div>
-
-      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
-        Obtenha sua chave diretamente no painel de desenvolvedor do Higgsfield (<a href="https://higgsfield.ai" target="_blank" style="color: var(--accent);">higgsfield.ai</a>). Seus dados ficam salvos apenas localmente nesta máquina.
-      </p>
-
-      <form id="configForm">
-        <div class="form-group">
-          <label class="form-label">Higgsfield API Key (Key ID):</label>
-          <input type="text" id="cfgApiKey" class="input" placeholder="hf_key_..." required>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Higgsfield API Secret (Key Secret):</label>
-          <input type="password" id="cfgApiSecret" class="input" placeholder="hf_sec_..." required>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Resolução Padrão:</label>
-          <select id="cfgDefaultRes" class="select">
-            <option value="1080p">1080p Full HD</option>
-            <option value="720p">720p HD</option>
-          </select>
-        </div>
-
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px;">
-          <button type="button" class="btn" id="cancelConfigBtn">Cancelar</button>
-          <button type="submit" class="btn btn-primary">Salvar Chaves</button>
-        </div>
-      </form>
+      <dl class="foot__co">
+        <div><dt>Razão social</dt><dd data-cfg="empresa.razaoSocial" class="is-missing">a preencher</dd></div>
+        <div><dt>CNPJ</dt><dd data-cfg="empresa.cnpj" class="is-missing">a preencher</dd></div>
+        <div><dt>Endereço</dt><dd data-cfg="empresa.endereco" class="is-missing">a preencher</dd></div>
+        <div><dt>Suporte</dt><dd><a data-mail href="#" class="is-missing">e-mail de suporte a preencher</a></dd></div>
+      </dl>
+      <nav class="foot__links" aria-label="Links legais">
+        <a href="/landing/termos.html">Termos de Uso</a>
+        <a href="/landing/privacidade.html">Política de Privacidade</a>
+        <a data-app href="/app">Entrar</a>
+      </nav>
     </div>
+    <div class="wrap foot__legal">
+      <p>© <span data-year>2026</span> Character. Higgsfield e GPT Image são marcas dos seus donos; o Character não é afiliado a eles. Os vídeos de exemplo foram gerados com IA.</p>
+    </div>
+  </footer>
+
+  <div class="sticky-cta" aria-hidden="true">
+    <div class="sticky-cta__txt">
+      <b>Grátis</b>
+      <span>use com o seu Higgsfield</span>
+    </div>
+    <a class="btn btn--primary" data-app href="/app" tabindex="-1">Começar grátis</a>
   </div>
 
-  <!-- MODAL: NOVO PERSONAGEM -->
-  <div class="modal-overlay" id="charModal">
-    <div class="modal">
-      <div class="modal-header">
-        <h3 style="font-size: 1.15rem; font-weight: 700;">Cadastrar Novo Personagem</h3>
-        <button class="modal-close" id="closeCharModalBtn">&times;</button>
-      </div>
-
-      <form id="newCharForm">
-        <div class="form-group">
-          <label class="form-label">Nome do Personagem:</label>
-          <input type="text" id="newCharName" class="input" placeholder="Ex: Lucas, Sofia, Cyberpunk Vector" required>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Fotos de Referência (Frente, Perfil, 3/4):</label>
-          <div class="dropzone" id="charPhotosDropzone">
-            <span>📷 Clique para selecionar até 4 fotos do seu personagem</span>
-            <input type="file" id="charPhotosInput" accept="image/png,image/jpeg,image/webp" multiple style="display: none;">
-          </div>
-          <span style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 6px;">
-            Dica de consistência: use a mesma iluminação e vestuário em ângulos diferentes para máxima fidelidade.
-          </span>
-          <div id="charPhotoPreviewList" style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;"></div>
-        </div>
-
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px;">
-          <button type="button" class="btn" id="cancelCharBtn">Cancelar</button>
-          <button type="submit" class="btn btn-primary" id="saveCharBtn">Salvar Personagem</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <script src="app.js"></script>
+  <script src="/landing/assets/landing.js" defer></script>
 </body>
 </html>

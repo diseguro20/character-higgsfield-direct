@@ -4,3 +4,5 @@ node_modules/
 firebase-debug.log
 uploads/*
 !uploads/.gitkeep
+
+.vercel
