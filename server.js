@@ -639,8 +639,8 @@ app.post('/api/takes', async (req, res) => {
 });
 
 // 9. CONEXÃO HIGGSFIELD VIA OAUTH 2.0 PKCE REAL (CLERK HIGGSFIELD)
-const HIGGSFIELD_CLIENT_ID = 'sRGCQJvvJkPrrtRj';
-const HIGGSFIELD_REDIRECT_URI = 'http://localhost:3334/callback';
+const HIGGSFIELD_CLIENT_ID = 'B9S2qOSkhW64P0w2';
+const HIGGSFIELD_REDIRECT_URI = 'http://127.0.0.1:3334/callback';
 const crypto = require('crypto');
 
 function base64Url(buf) {
@@ -661,7 +661,7 @@ function createHiggsfieldLogin() {
     code_challenge_method: 'S256',
     redirect_uri: HIGGSFIELD_REDIRECT_URI,
     response_type: 'code',
-    scope: 'openid email profile offline_access user:org:read',
+    scope: 'openid email profile offline_access',
     state: state
   }).toString();
 
@@ -1203,8 +1203,8 @@ function startHiggsfieldCallbackServer(port = 3334) {
     }
   });
 
-  callbackServer.listen(port, () => {
-    console.log(`⚡ Listener OAuth Higgsfield ativo em http://localhost:${port}/callback`);
+  callbackServer.listen(port, '0.0.0.0', () => {
+    console.log(`⚡ Listener OAuth Higgsfield ativo em http://127.0.0.1:${port}/callback`);
   });
 
   callbackServer.on('error', err => {

@@ -523,7 +523,7 @@ function CallbackPaste({ busy, onPaste, onBad }) {
     if (t.trim()) send(t)
   }
   return html`<form class="row hf-login__paste" onSubmit=${finish} style="gap:6px">
-    <input class="input input--sm grow" spellcheck="false" autocomplete="off" placeholder="Cole o link do callback (localhost:3334/callback?code=...) ou seu Token/API Key" value=${value}
+    <input class="input input--sm grow" spellcheck="false" autocomplete="off" placeholder="Cole o link do callback (127.0.0.1:3334/callback?code=...) ou seu Token/API Key" value=${value}
       onPaste=${() => { pasting.current = true }} onInput=${input} />
     ${clip ? html`<button type="button" class="btn btn--sm" disabled=${busy} onClick=${paste}>Colar</button>` : null}
     <button class="btn btn--sm btn--primary" disabled=${busy || !value.trim()}>Concluir</button>
@@ -549,7 +549,7 @@ function HiggsfieldLoginSteps({ login, now, busy, onOpen, onPaste, onBad, onCanc
         <span class="grow">Clique em Abrir login do Higgsfield para conectar sua conta real (se você já estiver logado, a conexão é direta).</span>
         <a class="btn btn--sm btn--butter" href=${login.authorizeUrl} target="_blank" rel="noopener" onClick=${onOpen}>Abrir login do Higgsfield</a></div>
       <div class="hf-login__step"><span class="step-num">2</span>
-        <span class="grow">Após autorizar no Higgsfield, a página conecta automaticamente. Se a janela não fechar, copie o endereço dela (começa com localhost:3334) ou seu Token e clique em Concluir:</span></div>
+        <span class="grow">Após autorizar no Higgsfield, a página conecta automaticamente. Se a janela não fechar, copie o endereço dela (começa com 127.0.0.1:3334) ou seu Token e clique em Concluir:</span></div>
       ${help.map(t => html`<span class="small dim hf-login__help">${t}</span>`)}
       <${CallbackPaste} key=${login.id} busy=${busy} onPaste=${onPaste} onBad=${onBad} />
       <span class="small dim">${doneHint}</span>`
