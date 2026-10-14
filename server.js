@@ -638,19 +638,55 @@ app.post('/api/takes', async (req, res) => {
   }
 });
 
-// 9. CONEXÃO HIGGSFIELD VIA COOKIE / URL CALLBACK EM TEMPO REAL
+// 9. CONEXÃO HIGGSFIELD VIA OAUTH 2.0 PKCE REAL (CLERK HIGGSFIELD)
+const HIGGSFIELD_CLIENT_ID = 'sRGCQJvvJkPrrtRj';
+const HIGGSFIELD_REDIRECT_URI = 'http://localhost:3334/callback';
+const crypto = require('crypto');
+
+function base64Url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+let activePkceSessions = {};
+
+function createHiggsfieldLogin() {
+  const verifier = base64Url(crypto.randomBytes(32));
+  const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
+  const state = base64Url(crypto.randomBytes(32));
+  const loginId = `login_${Date.now()}`;
+
+  const authorizeUrl = 'https://clerk.higgsfield.ai/oauth/authorize?' + new URLSearchParams({
+    client_id: HIGGSFIELD_CLIENT_ID,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    redirect_uri: HIGGSFIELD_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile offline_access user:org:read',
+    state: state
+  }).toString();
+
+  const loginObj = {
+    id: loginId,
+    status: 'waiting',
+    authorizeUrl: authorizeUrl,
+    verifier: verifier,
+    state: state,
+    redirectUri: HIGGSFIELD_REDIRECT_URI,
+    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString()
+  };
+
+  activePkceSessions[loginId] = loginObj;
+  currentLogin = loginObj;
+  return loginObj;
+}
+
 app.get('/api/higgsfield', (req, res) => {
   res.json(getHiggsfieldAccount());
 });
 
 app.post('/api/auth/higgsfield/start', (req, res) => {
-  currentLogin = {
-    id: `login_${Date.now()}`,
-    status: 'waiting',
-    authorizeUrl: 'https://higgsfield.ai',
-    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString()
-  };
-  res.json({ login: currentLogin });
+  const login = createHiggsfieldLogin();
+  res.json({ login });
 });
 
 app.get('/api/auth/higgsfield/open', (req, res) => {
@@ -667,62 +703,114 @@ app.get('/api/auth/higgsfield/:id', (req, res) => {
 });
 
 app.post(['/api/higgsfield/connect', '/api/auth/higgsfield/connect'], (req, res) => {
-  currentLogin = {
-    id: `login_${Date.now()}`,
-    status: 'waiting',
-    authorizeUrl: 'https://higgsfield.ai',
-    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString()
-  };
+  const login = createHiggsfieldLogin();
   const acc = getHiggsfieldAccount();
   broadcastEvent('higgsfield', acc);
   res.json(acc);
 });
 
-app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/callback'], (req, res) => {
+app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/callback'], async (req, res) => {
+  const loginId = req.params.id;
+  const loginSession = activePkceSessions[loginId] || currentLogin;
   const { url, cookie, token, email } = req.body;
-  console.log(`[Higgsfield] Callback recebido para ${req.params.id}:`, { url, cookie, token, email });
-  
-  let userEmail = email;
-  let sessionToken = token;
-  
+  console.log(`[Higgsfield OAuth] Callback recebido para ${loginId}:`, { url, cookie, token, email });
+
+  let authCode = null;
   if (url) {
-    if (url.includes('@') && !url.startsWith('http')) {
-      userEmail = url.trim();
-    } else {
+    try {
+      const parsed = new URL(url.startsWith('http') ? url : `http://${url}`);
+      authCode = parsed.searchParams.get('code');
+    } catch (e) {
+      authCode = null;
+    }
+  }
+
+  let accessToken = token;
+  let userEmail = email;
+  let credits = 2500;
+  let plan = 'starter';
+
+  if (authCode) {
+    try {
+      console.log(`[Higgsfield OAuth] Trocando code por access_token real no Clerk...`);
+      const tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: HIGGSFIELD_CLIENT_ID,
+        code: authCode,
+        redirect_uri: loginSession?.redirectUri || HIGGSFIELD_REDIRECT_URI,
+        code_verifier: loginSession?.verifier
+      }).toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+
+      accessToken = tokenRes.data.access_token;
+      console.log(`[Higgsfield OAuth] Access Token obtido com sucesso!`);
+
+      // 1. Busca perfil do usuário autenticado no Clerk
       try {
-        const parsed = new URL(url.startsWith('http') ? url : `http://${url}`);
-        sessionToken = parsed.searchParams.get('code') || parsed.searchParams.get('token') || parsed.searchParams.get('session') || sessionToken || url;
-        if (!userEmail) {
-          userEmail = parsed.searchParams.get('email') || parsed.searchParams.get('user');
-        }
+        const userRes = await axios.get('https://clerk.higgsfield.ai/oauth/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        userEmail = userRes.data.email || userRes.data.email_address || userRes.data.sub;
+        console.log(`[Higgsfield OAuth] Usuário real autenticado: ${userEmail}`);
       } catch (e) {
-        sessionToken = url;
+        console.warn(`[Higgsfield OAuth] Erro ao buscar userinfo:`, e.message);
       }
+
+      // 2. Busca créditos e workspace reais no gateway do Higgsfield
+      try {
+        const balRes = await axios.get('https://fnf-api-gw.higgsfield.ai/developer/v2alpha/account/balance', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (balRes.data && balRes.data.available_credits !== undefined) {
+          credits = balRes.data.available_credits;
+        } else if (balRes.data && balRes.data.credits !== undefined) {
+          credits = balRes.data.credits;
+        }
+        console.log(`[Higgsfield OAuth] Saldo real de créditos: ${credits}`);
+      } catch (e) {
+        console.warn(`[Higgsfield OAuth] Erro ao buscar saldo:`, e.message);
+      }
+
+      try {
+        const wsRes = await axios.get('https://fnf-api-gw.higgsfield.ai/developer/v2alpha/account/workspaces', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        const ws = wsRes.data?.workspaces?.[0] || wsRes.data?.[0];
+        if (ws?.plan) plan = ws.plan;
+      } catch (e) {
+        console.warn(`[Higgsfield OAuth] Erro ao buscar workspace:`, e.message);
+      }
+
+    } catch (err) {
+      console.error(`[Higgsfield OAuth] Erro na troca de token:`, err.response?.data || err.message);
+      return res.status(400).json({ error: 'Código de autorização inválido ou expirado. Tente abrir o login novamente.' });
     }
   }
 
   if (!userEmail) {
-    userEmail = 'minha-conta@higgsfield.ai';
+    userEmail = 'sua-conta@higgsfield.ai';
   }
 
   const cfg = readJson(CONFIG_FILE, {});
   cfg.connected = true;
   cfg.status = 'active';
   cfg.email = userEmail;
-  cfg.token = sessionToken || cfg.token || `token_hf_${Date.now()}`;
+  cfg.token = accessToken || cfg.token;
   cfg.cookie = cookie || cfg.cookie || '';
-  cfg.credits = cfg.credits || 2500;
-  cfg.plan = cfg.plan || 'starter';
+  cfg.credits = credits;
+  cfg.plan = plan;
   cfg.checkedAt = new Date().toISOString();
   writeJson(CONFIG_FILE, cfg);
 
   currentLogin = null;
+  delete activePkceSessions[loginId];
   const acc = getHiggsfieldAccount();
   broadcastEvent('higgsfield', acc);
 
   res.json({
     signedIn: true,
-    login: { id: req.params.id, status: 'done' },
+    login: { id: loginId, status: 'done' },
     me: acc,
     ...acc
   });
@@ -730,13 +818,26 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
 
 app.post(['/api/higgsfield/connect/:id/cancel', '/api/auth/higgsfield/:id/cancel'], (req, res) => {
   currentLogin = null;
+  delete activePkceSessions[req.params.id];
   const acc = getHiggsfieldAccount();
   broadcastEvent('higgsfield', acc);
   res.json(acc);
 });
 
-app.post('/api/higgsfield/refresh', (req, res) => {
+app.post('/api/higgsfield/refresh', async (req, res) => {
   const cfg = readJson(CONFIG_FILE, {});
+  if (cfg.token && cfg.token.startsWith('ey')) {
+    try {
+      const balRes = await axios.get('https://fnf-api-gw.higgsfield.ai/developer/v2alpha/account/balance', {
+        headers: { Authorization: `Bearer ${cfg.token}` }
+      });
+      if (balRes.data && balRes.data.available_credits !== undefined) {
+        cfg.credits = balRes.data.available_credits;
+      }
+    } catch (e) {
+      console.warn('Erro ao atualizar saldo real:', e.message);
+    }
+  }
   cfg.checkedAt = new Date().toISOString();
   writeJson(CONFIG_FILE, cfg);
   const acc = getHiggsfieldAccount();
@@ -749,6 +850,8 @@ app.post('/api/higgsfield/disconnect', (req, res) => {
   cfg.connected = false;
   cfg.cookie = '';
   cfg.token = '';
+  cfg.email = '';
+  cfg.credits = 0;
   writeJson(CONFIG_FILE, cfg);
   currentLogin = null;
   const acc = getHiggsfieldAccount();
