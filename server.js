@@ -1100,7 +1100,39 @@ app.post(['/api/higgsfield/connect/:id/cancel', '/api/auth/higgsfield/:id/cancel
 });
 
 app.post('/api/higgsfield/refresh', async (req, res) => {
-  await ensureValidHiggsfieldToken();
+  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
+  const { credits, cookie, token } = req.body || {};
+
+  if (credits !== undefined && credits !== null && !isNaN(Number(credits))) {
+    cfg.credits = Number(credits);
+    console.log(`[Higgsfield Saldo] Saldo atualizado para ${cfg.credits} créditos`);
+  } else {
+    const sessToken = token || cfg.token;
+    const sessCookie = cookie || cfg.cookie;
+
+    if (sessCookie || sessToken) {
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (sessToken) headers['Authorization'] = `Bearer ${sessToken}`;
+        if (sessCookie) headers['Cookie'] = sessCookie.includes('=') ? sessCookie : `__session=${sessCookie}`;
+
+        const dashRes = await axios.get('https://dash.higgsfield.ai/api/v2/dashboard/overview/', {
+          headers,
+          timeout: 5000
+        });
+        if (dashRes.data && dashRes.data.credit_balance) {
+          const amount = dashRes.data.credit_balance.amount_usd || dashRes.data.credit_balance.credits || dashRes.data.credit_balance;
+          cfg.credits = Math.round(Number(amount));
+          console.log(`[Higgsfield Saldo] Saldo sincronizado via dash.higgsfield.ai: ${cfg.credits}`);
+        }
+      } catch (e) {
+        console.warn('[Higgsfield Saldo] Consulta a dash.higgsfield.ai:', e.response?.data?.detail || e.message);
+      }
+    }
+  }
+
+  cfg.checkedAt = new Date().toISOString();
+  writeJson(CONFIG_FILE, cfg);
   const acc = getHiggsfieldAccount();
   broadcastEvent('higgsfield', acc);
   res.json(acc);
