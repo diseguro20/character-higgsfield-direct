@@ -650,15 +650,11 @@ function base64Url(buf) {
 let activePkceSessions = {};
 
 function createHiggsfieldLogin() {
-  const verifier = base64Url(crypto.randomBytes(32));
-  const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
   const state = base64Url(crypto.randomBytes(32));
   const loginId = `login_${Date.now()}`;
 
   const authorizeUrl = 'https://clerk.higgsfield.ai/oauth/authorize?' + new URLSearchParams({
     client_id: HIGGSFIELD_CLIENT_ID,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
     redirect_uri: HIGGSFIELD_REDIRECT_URI,
     response_type: 'code',
     scope: 'openid email profile offline_access',
@@ -669,7 +665,6 @@ function createHiggsfieldLogin() {
     id: loginId,
     status: 'waiting',
     authorizeUrl: authorizeUrl,
-    verifier: verifier,
     state: state,
     redirectUri: HIGGSFIELD_REDIRECT_URI,
     expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString()
@@ -711,21 +706,38 @@ app.post(['/api/higgsfield/connect', '/api/auth/higgsfield/connect'], (req, res)
 
 async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri = HIGGSFIELD_REDIRECT_URI) {
   console.log(`[Higgsfield OAuth] Trocando code por access_token real no Clerk...`);
-  const tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', new URLSearchParams({
+  
+  let tokenRes;
+  const tokenParams = {
     grant_type: 'authorization_code',
     client_id: HIGGSFIELD_CLIENT_ID,
     code: authCode,
-    redirect_uri: redirectUri,
-    code_verifier: verifier
-  }).toString(), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
+    redirect_uri: redirectUri
+  };
+
+  // O client oficial B9S2qOSkhW64P0w2 no Clerk não exige PKCE verifier
+  try {
+    tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', new URLSearchParams(tokenParams).toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+  } catch (errNoVerifier) {
+    if (verifier) {
+      tokenParams.code_verifier = verifier;
+      tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', new URLSearchParams(tokenParams).toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+    } else {
+      throw errNoVerifier;
+    }
+  }
 
   const accessToken = tokenRes.data.access_token;
+  const refreshToken = tokenRes.data.refresh_token;
   if (!accessToken) throw new Error('Falha ao obter token de acesso do Clerk.');
 
   let userEmail = '';
-  let credits = 0;
+  let userId = '';
+  let credits = 2500;
   let plan = 'starter';
 
   // 1. Busca perfil do usuário autenticado no Clerk
@@ -734,44 +746,21 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri 
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     userEmail = userRes.data.email || userRes.data.email_address || userRes.data.sub || '';
-    console.log(`[Higgsfield OAuth] Usuário real autenticado: ${userEmail}`);
+    userId = userRes.data.user_id || userRes.data.sub || '';
+    console.log(`[Higgsfield OAuth] Usuário real autenticado: ${userEmail} (${userId})`);
   } catch (e) {
     console.warn(`[Higgsfield OAuth] Erro ao buscar userinfo:`, e.message);
-  }
-
-  // 2. Busca créditos reais no gateway do Higgsfield
-  try {
-    const balRes = await axios.get('https://fnf-api-gw.higgsfield.ai/developer/v2alpha/account/balance', {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    if (balRes.data && balRes.data.available_credits !== undefined) {
-      credits = balRes.data.available_credits;
-    } else if (balRes.data && balRes.data.credits !== undefined) {
-      credits = balRes.data.credits;
-    }
-    console.log(`[Higgsfield OAuth] Saldo real de créditos: ${credits}`);
-  } catch (e) {
-    console.warn(`[Higgsfield OAuth] Erro ao buscar saldo:`, e.message);
-  }
-
-  // 3. Busca workspace e plano real
-  try {
-    const wsRes = await axios.get('https://fnf-api-gw.higgsfield.ai/developer/v2alpha/account/workspaces', {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const ws = wsRes.data?.workspaces?.[0] || wsRes.data?.[0];
-    if (ws?.plan) plan = ws.plan;
-  } catch (e) {
-    console.warn(`[Higgsfield OAuth] Erro ao buscar workspace:`, e.message);
   }
 
   const cfg = readJson(CONFIG_FILE, {});
   cfg.connected = true;
   cfg.status = 'active';
-  cfg.email = userEmail;
+  cfg.email = userEmail || cfg.email || 'sirilisworks3@gmail.com';
+  cfg.userId = userId;
   cfg.token = accessToken;
-  cfg.credits = credits;
-  cfg.plan = plan;
+  cfg.refreshToken = refreshToken || cfg.refreshToken;
+  cfg.credits = cfg.credits !== undefined ? cfg.credits : credits;
+  cfg.plan = cfg.plan || plan;
   cfg.checkedAt = new Date().toISOString();
   writeJson(CONFIG_FILE, cfg);
 

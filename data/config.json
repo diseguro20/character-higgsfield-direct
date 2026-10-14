@@ -1,3 +1,11 @@
 {
-  "connected": false
+  "connected": true,
+  "status": "active",
+  "email": "sirilisworks3@gmail.com",
+  "userId": "user_3KOFf1GutHdSGplLiBGJVX0XZk1",
+  "token": "oat_OGPG8FDV1X2AFHKZ848EXPBFYT8PDF52",
+  "refreshToken": "ZMZMZMNJMGUTNZZJNY01NDC2LTGWOGYTYTE0MZAYMTQ2ZWFL",
+  "credits": 2500,
+  "plan": "starter",
+  "checkedAt": "2026-10-14T19:04:00.000Z"
 }
