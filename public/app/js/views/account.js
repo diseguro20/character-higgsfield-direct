@@ -600,33 +600,15 @@ export function HiggsfieldPanel() {
     const on = h.status === 'active'
     // o plano da conta no Higgsfield (Free, Starter, Plus...), quando o servidor sabe
     const plan = planText(h.plan)
-    const onEditBalance = async () => {
-      const val = prompt('Informe o saldo real de créditos da sua conta no Higgsfield (ou cole o token de sessão):', String(h.credits ?? ''));
-      if (val !== null && val.trim() !== '') {
-        const trimmed = val.trim();
-        const numCredits = Number(trimmed.replace(/[^0-9]/g, ''));
-        if (!isNaN(numCredits) && !trimmed.startsWith('ey') && !trimmed.startsWith('oat_')) {
-          await api.post('/api/higgsfield/refresh', { credits: numCredits });
-          toast(`Saldo atualizado para ${num(numCredits)} créditos!`, 'ok');
-        } else {
-          await api.post('/api/higgsfield/refresh', { token: trimmed });
-          toast('Consultando saldo no Higgsfield...', 'info');
-        }
-        refresh.run();
-      } else {
-        refresh.run();
-      }
-    };
-
     body = html`<div class="key">
       <div><div class="key__name"><span class=${`dot ${on ? 'is-on' : ''}`}></span><span class="ellipsis">${h.email || 'Conta conectada'}</span></div>
         <div class="small dim">${higgsfieldStatusText(h)}</div>
         ${plan ? html`<div class="small dim hf-plan">Plano: ${plan}</div>` : null}</div>
-      <div class="small muted">Créditos <b class="pixel" style="cursor:pointer;text-decoration:underline dotted" onClick=${onEditBalance} title="Clique para editar ou conferir seu saldo real">${h.credits == null ? '?' : num(h.credits)}</b>
+      <div class="small muted">Créditos <b class="pixel">${h.credits == null ? '?' : num(h.credits)}</b>
         <div class="small dim">Os vídeos e personagens usam os créditos desta conta.${h.checkedAt ? ` Saldo conferido ${ago(h.checkedAt)}.` : ''}</div></div>
       <div class="row" style="gap:6px">
         ${h.status === 'auth_error' ? html`<button class="btn btn--sm btn--butter" disabled=${busy} onClick=${connect}>Conectar de novo</button>` : null}
-        <button class="btn btn--sm" disabled=${busy || refresh.busy} onClick=${onEditBalance} title="Clique para atualizar ou ajustar seu saldo real">${refresh.done ? 'Saldo conferido agora' : 'Atualizar saldo'}</button>
+        <button class="btn btn--sm" disabled=${busy || refresh.busy || refresh.done} onClick=${() => { setErr(null); refresh.run() }}>${refresh.done ? 'Saldo conferido agora' : 'Atualizar saldo'}</button>
         <button class="btn btn--sm btn--quiet" disabled=${busy} onClick=${disconnect}>Desconectar</button>
       </div>
     </div>`

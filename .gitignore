@@ -4,5 +4,8 @@ node_modules/
 firebase-debug.log
 uploads/*
 !uploads/.gitkeep
-
-.vercel
+*.tgz
+*.tar.gz
+hf.exe
+package/
+data/sessions.json
