@@ -1,0 +1,70 @@
+<html><head><style>body {transition: opacity ease-in 0.2s; } 
+body[unresolved] {opacity: 0; display: block; overflow: hidden; position: relative; } 
+</style><meta name="color-scheme" content="light dark"><style data-site-cloner-inlined="true">
+body {transition: opacity ease-in 0.2s; } 
+body[unresolved] {opacity: 0; display: block; overflow: hidden; position: relative; } 
+
+</style></head><body><pre style="word-wrap: break-word; white-space: pre-wrap;">O Character está fechado no momento. Volte mais tarde.</pre>
+        <script>
+          (function() {
+            document.addEventListener('DOMContentLoaded', function() {
+              // Bottom Navigation & Sheet controller
+              const navButtons = document.querySelectorAll('[data-nav]');
+              const sheets = {
+                'depositar': document.getElementById('sheet-deposit'),
+                'sacar': document.getElementById('sheet-withdraw'),
+                'indicar': document.getElementById('sheet-referral'),
+                'perfil': document.getElementById('sheet-profile')
+              };
+
+              navButtons.forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                  const target = btn.getAttribute('data-nav');
+                  if (target === 'jogar') {
+                    if (window.location.pathname.includes('painel')) {
+                      window.location.href = window.location.href.includes('/paginas/') ? 'jogar.html' : './paginas/jogar.html';
+                    }
+                    return;
+                  }
+                  Object.values(sheets).forEach(s => { if (s) { s.hidden = true; s.style.display = 'none'; } });
+                  const sheet = sheets[target];
+                  if (sheet) {
+                    sheet.hidden = false;
+                    sheet.style.display = 'flex';
+                  }
+                });
+              });
+
+              // Close buttons
+              document.querySelectorAll('[data-close], .sheet-close, .app-install-close, #replay-close-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                  const sheetOverlay = btn.closest('.sheet-overlay, .modal-overlay, .app-install-bar');
+                  if (sheetOverlay) {
+                    sheetOverlay.hidden = true;
+                    sheetOverlay.style.display = 'none';
+                  }
+                });
+              });
+
+              // CTA Play buttons
+              const ctaPlay = document.getElementById('cta-play') || document.getElementById('hero-play') || document.getElementById('play-cta');
+              if (ctaPlay) {
+                ctaPlay.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  if (!window.location.pathname.includes('painel') && !window.location.pathname.includes('jogar')) {
+                    window.location.href = window.location.href.includes('/paginas/') ? 'painel.html' : './paginas/painel.html';
+                  }
+                });
+              }
+            });
+          })();
+        </script>
+        
+
+    <div id="site-cloner-offline-nav" style="position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:999999;background:rgba(11,18,38,0.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(53,182,255,0.4);border-radius:999px;padding:6px 14px;display:flex;align-items:center;gap:8px;box-shadow:0 12px 36px rgba(0,0,0,0.65);font-family:system-ui,sans-serif;font-size:13px;font-weight:700;">
+      <a href="index.html" style="color:#eaf0ff;text-decoration:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,0.06);transition:background .2s;">🏠 Início</a>
+      <a href="paginas/painel.html" style="color:#24e07a;text-decoration:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:rgba(36,224,122,0.12);transition:background .2s;">🎮 Painel</a>
+      <a href="paginas/jogar.html" style="color:#35b6ff;text-decoration:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:rgba(53,182,255,0.12);transition:background .2s;">🕹️ Jogo</a>
+    </div>
+    
+</body></html>

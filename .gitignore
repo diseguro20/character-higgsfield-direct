@@ -1,0 +1,6 @@
+node_modules/
+.env
+.vercel/
+firebase-debug.log
+uploads/*
+!uploads/.gitkeep

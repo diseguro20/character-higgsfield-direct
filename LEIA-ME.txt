@@ -1,0 +1,11 @@
+Site Cloner Pro v3.6
+Origem: https://app.charactersschool.com
+Total de Páginas: 3
+Total de Assets/Imagens: 0
+
+Conteúdo:
+- index.html: Página inicial 100% fiel e navegável offline no seu computador
+- paginas/: Telas individuais (painel.html, jogar.html, etc.) com todos os estilos embutidos
+- imagens/: Todas as logos, banners e ícones originais
+- catalogo_produtos.json: Dados estruturados de itens e produtos
+- PROMPT_IA.md: Prompt completo para IAs (Antigravity / Cursor / Claude / Codex)
