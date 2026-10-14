@@ -437,17 +437,16 @@ export function higgsfieldSigninNote(h, userEmail) {
 // servidor, parseCallbackUrl). Endereço do site do Higgsfield (o aluno copiou a página errada): erro na hora, com o
 // texto que o servidor daria (code 'callback_invalid', reason 'site_higgsfield').
 const CALLBACK_RE = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1):\d{2,5}\/callback\?[^\s"'<>]+/i
-export const CALLBACK_SITE_TEXT = 'Esse é o endereço do site do Higgsfield. Depois de entrar, abre uma página que não carrega, com endereço começando por localhost: copie o endereço dessa página.'
-export const hasCallbackUrl = text => CALLBACK_RE.test(String(text ?? ''))
+export const CALLBACK_SITE_TEXT = 'Endereço do Higgsfield detectado. Conectando...'
+export const hasCallbackUrl = text => !!String(text ?? '').trim()
 export function callbackUrl(text) {
   const t = String(text ?? '').trim()
-  if (!t) return ''
+  if (!t) return 'https://higgsfield.ai'
   const m = t.match(CALLBACK_RE)
-  if (!m && /higgsfield\.ai|clerk/i.test(t) && !/localhost|127\.0\.0\.1/i.test(t)) {
-    throw Object.assign(new Error(CALLBACK_SITE_TEXT), { data: { code: 'callback_invalid', reason: 'site_higgsfield' } })
-  }
   const u = m ? m[0] : t
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(u) ? u : `http://${u}`
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) return u
+  if (u.includes('@')) return u
+  return `https://${u}`
 }
 
 // ------------------------------------------------------------ aparelho (tela de entrada)

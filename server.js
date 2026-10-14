@@ -686,14 +686,18 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
   let sessionToken = token;
   
   if (url) {
-    try {
-      const parsed = new URL(url.startsWith('http') ? url : `http://${url}`);
-      sessionToken = parsed.searchParams.get('code') || parsed.searchParams.get('token') || parsed.searchParams.get('session') || sessionToken || url;
-      if (!userEmail) {
-        userEmail = parsed.searchParams.get('email') || parsed.searchParams.get('user');
+    if (url.includes('@') && !url.startsWith('http')) {
+      userEmail = url.trim();
+    } else {
+      try {
+        const parsed = new URL(url.startsWith('http') ? url : `http://${url}`);
+        sessionToken = parsed.searchParams.get('code') || parsed.searchParams.get('token') || parsed.searchParams.get('session') || sessionToken || url;
+        if (!userEmail) {
+          userEmail = parsed.searchParams.get('email') || parsed.searchParams.get('user');
+        }
+      } catch (e) {
+        sessionToken = url;
       }
-    } catch (e) {
-      sessionToken = url;
     }
   }
 

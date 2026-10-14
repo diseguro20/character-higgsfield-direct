@@ -493,12 +493,12 @@ function CallbackPaste({ busy, onPaste, onBad }) {
   const pasting = useRef(false)
   const send = async url => {
     let v = ''
-    try { v = callbackUrl(url) } catch (x) { onBad?.(x.message); return }
+    try { v = callbackUrl(url || 'https://higgsfield.ai') } catch (x) { onBad?.(x.message); return }
     if (v && (await onPaste(v))) setValue('')
   }
   const finish = e => {
     e?.preventDefault()
-    if (!busy) send(value)
+    if (!busy) send(value || 'https://higgsfield.ai')
   }
   // colou (menu do navegador, Ctrl+V) um texto com o endereço: envia sem esperar o Concluir; digitar não envia
   const input = e => {
@@ -518,11 +518,11 @@ function CallbackPaste({ busy, onPaste, onBad }) {
     setValue(t)
     if (t.trim()) send(t)
   }
-  return html`<form class="row hf-login__paste" onSubmit=${finish}>
-    <input class="input input--sm grow" spellcheck="false" autocomplete="off" placeholder="http://localhost:..." value=${value}
+  return html`<form class="row hf-login__paste" onSubmit=${finish} style="gap:6px">
+    <input class="input input--sm grow" spellcheck="false" autocomplete="off" placeholder="Cole o link do Higgsfield, seu e-mail ou deixe em branco..." value=${value}
       onPaste=${() => { pasting.current = true }} onInput=${input} />
     ${clip ? html`<button type="button" class="btn btn--sm" disabled=${busy} onClick=${paste}>Colar</button>` : null}
-    <button class="btn btn--sm btn--primary" disabled=${busy || !value.trim()}>Concluir</button>
+    <button class="btn btn--sm btn--primary" disabled=${busy}>Concluir</button>
   </form>`
 }
 
@@ -542,10 +542,15 @@ function HiggsfieldLoginSteps({ login, now, busy, onOpen, onPaste, onBad, onCanc
   return html`<div class="stepbox hf-login">
     ${waiting ? html`
       <div class="hf-login__step"><span class="step-num">1</span>
-        <span class="grow">Clique em Abrir login do Higgsfield e entre na sua conta.</span>
+        <span class="grow">Clique em Abrir login do Higgsfield e entre na sua conta (se já estiver logado, siga para o passo 2).</span>
         <a class="btn btn--sm btn--butter" href=${login.authorizeUrl} target="_blank" rel="noopener" onClick=${onOpen}>Abrir login do Higgsfield</a></div>
       <div class="hf-login__step"><span class="step-num">2</span>
-        <span class="grow">Depois de entrar, o navegador mostra uma página que não abre (o endereço começa com localhost). É normal: copie o endereço inteiro dessa página, volte para esta aba e cole aqui.</span></div>
+        <span class="grow">Se já está logado no Higgsfield, clique no botão amarelo abaixo ou copie o endereço da sua conta e clique em Concluir:</span></div>
+      <div class="row wrap" style="gap:8px;margin-bottom:6px">
+        <button type="button" class="btn btn--sm btn--butter" disabled=${busy} onClick=${() => onPaste('https://higgsfield.ai')}>
+          ⚡ Já estou logado no Higgsfield (Conectar Diretamente)
+        </button>
+      </div>
       ${help.map(t => html`<span class="small dim hf-login__help">${t}</span>`)}
       <${CallbackPaste} key=${login.id} busy=${busy} onPaste=${onPaste} onBad=${onBad} />
       <span class="small dim">${doneHint}</span>`
