@@ -441,12 +441,13 @@ export const CALLBACK_SITE_TEXT = 'Endereço do Higgsfield detectado. Conectando
 export const hasCallbackUrl = text => !!String(text ?? '').trim()
 export function callbackUrl(text) {
   const t = String(text ?? '').trim()
-  if (!t) return 'https://higgsfield.ai'
+  if (!t) throw new Error('Cole o link completo do callback ou seu Token.')
+  if (t.startsWith('ey') || t.startsWith('hf')) return t
   const m = t.match(CALLBACK_RE)
   const u = m ? m[0] : t
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) return u
   if (u.includes('@')) return u
-  return `https://${u}`
+  return `http://${u}`
 }
 
 // ------------------------------------------------------------ aparelho (tela de entrada)
