@@ -910,6 +910,137 @@ app.post('/api/admin/accounts/:id/credentials', (req, res) => {
   res.json({ ok: true });
 });
 
+// Admin Users / Alunos
+app.get('/api/admin/users', (req, res) => {
+  res.json({ users: [], pending_licenses: [] });
+});
+
+app.post('/api/admin/licenses', (req, res) => {
+  res.json({ ok: true, email: req.body.email });
+});
+
+app.post('/api/admin/users/:id/adjust', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.patch('/api/admin/users/:id', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Admin Paywall
+app.get('/api/admin/paywall', (req, res) => {
+  res.json({
+    config: { enabled: false, price_brl: 49.90 },
+    orders: [],
+    stats: { today: 0, month: 0, total: 0 }
+  });
+});
+
+app.put('/api/admin/settings/paywall', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/paywall/access', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/paywall/transfer', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Admin Settings (Preços e Limites)
+app.get('/api/admin/settings', (req, res) => {
+  res.json({
+    pricing: {
+      credits_per_second: 11,
+      min_seconds: 4,
+      character_credits: 60,
+      character_image_credits: 15,
+      credit_price_brl_cost: '0.01'
+    },
+    limits: {
+      max_upload_mb: 350,
+      maxClipSeconds: 60,
+      maxDuration: 29.7,
+      minDuration: 4
+    },
+    features: {
+      email_login: false
+    },
+    credit_packages: []
+  });
+});
+
+app.put('/api/admin/settings/:key', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Admin Telegram
+app.get('/api/admin/telegram', (req, res) => {
+  res.json({
+    connected: false,
+    bot_token: null,
+    bot_username: null,
+    ai_api_key: null,
+    model: 'claude-3-5-sonnet',
+    owner: null,
+    bind: null
+  });
+});
+
+app.put('/api/admin/telegram', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/telegram/code', (req, res) => {
+  res.json({ ok: true, code: '123456' });
+});
+
+app.post('/api/admin/telegram/unbind', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Admin Google Drive
+app.get('/api/admin/drive', (req, res) => {
+  res.json({
+    connected: false,
+    config: {
+      enabled: false,
+      emails: [],
+      folder: 'Character'
+    },
+    counts: {
+      pending: 0,
+      uploading: 0,
+      done: 0,
+      failed: 0,
+      skipped: 0,
+      retrying: 0,
+      gave_up: 0
+    },
+    recent: [],
+    connect_command: 'rclone config',
+    max_attempts: 3
+  });
+});
+
+app.put('/api/admin/drive', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/drive/retry', (req, res) => {
+  res.json({ ok: true, retried: 0 });
+});
+
+app.post('/api/admin/drive/backfill', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Catch-all para qualquer rota administrativa adicional
+app.use('/api/admin', (req, res) => {
+  res.json({ ok: true });
+});
+
 app.post('/api/characters/:id/views', (req, res) => {
   const charId = req.params.id;
   const characters = readJson(CHARACTERS_FILE, []);
