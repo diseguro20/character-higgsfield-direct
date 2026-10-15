@@ -48,16 +48,16 @@ try {
 }
 
 const DEFAULT_CONFIG = {
-  connected: false,
-  status: "idle",
-  email: "",
-  userId: "",
-  token: "",
-  refreshToken: "",
-  workspaceId: "",
-  credits: 0,
-  plan: "",
-  checkedAt: new Date().toISOString()
+  connected: true,
+  status: "active",
+  email: "sirilisworks3@gmail.com",
+  userId: "user_3KOFf1GutHdSGplLiBGJVX0XZk1",
+  token: "oat_OYQRHSNWH29GPJMR2HXDZY508KQ67ZYE",
+  refreshToken: "N2M5MTE3NDUTODBLYI01MMUYLWFIOTETOTHKODQ0ZJNINGEW",
+  workspaceId: "54e977f6-fece-4649-8e44-b86cf8e406e4",
+  credits: 560,
+  plan: "plus",
+  checkedAt: "2026-10-15T03:09:48.505Z"
 };
 
 let memoryCache = {};
@@ -69,19 +69,20 @@ function readJson(file, fallback = []) {
       return memoryCache[baseName];
     }
     let data = null;
+    const repoFile = path.join(REPO_DATA_DIR, baseName);
     try {
-      if (fs.existsSync(file)) {
-        data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (fs.existsSync(repoFile)) {
+        data = JSON.parse(fs.readFileSync(repoFile, 'utf8'));
       }
     } catch {}
-    if (!data) {
-      const repoFile = path.join(REPO_DATA_DIR, baseName);
-      try {
-        if (fs.existsSync(repoFile)) {
-          data = JSON.parse(fs.readFileSync(repoFile, 'utf8'));
+    try {
+      if (fs.existsSync(file)) {
+        const tmpData = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (tmpData && tmpData.token) {
+          data = { ...data, ...tmpData };
         }
-      } catch {}
-    }
+      }
+    } catch {}
     const finalConfig = { ...DEFAULT_CONFIG, ...(data || {}) };
     memoryCache[baseName] = finalConfig;
     return finalConfig;
@@ -156,10 +157,10 @@ function getHiggsfieldAccount() {
     mode: 'own',
     connected: isConnected,
     status: isConnected ? (cfg.status || 'active') : 'idle',
-    credits: isConnected ? (cfg.credits !== undefined ? cfg.credits : 2500) : 0,
-    available: isConnected ? (cfg.credits !== undefined ? cfg.credits : 2500) : 0,
+    credits: isConnected ? (cfg.credits !== undefined ? cfg.credits : 560) : 0,
+    available: isConnected ? (cfg.credits !== undefined ? cfg.credits : 560) : 0,
     email: isConnected ? (cfg.email || 'sirilisworks3@gmail.com') : '',
-    plan: isConnected ? (cfg.plan || 'starter') : '',
+    plan: isConnected ? (cfg.plan || 'plus') : '',
     checkedAt: cfg.checkedAt || new Date().toISOString(),
     cookie: cfg.cookie || '',
     token: cfg.token || '',
