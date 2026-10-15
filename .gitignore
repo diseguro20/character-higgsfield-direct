@@ -12,7 +12,7 @@ package/
 data/sessions.json
 data/projects.json
 .production-test-job.json
-vendor/
+/vendor/
 
 .env*
 !.env.example
