@@ -14,7 +14,7 @@ export async function uploadClips(files, onEach) {
   if (!list.length) { toast('Solte arquivos de vídeo (mp4, mov...)', 'err'); return [] }
   const created = []
   const queue = list.map(file => {
-    const entry = { id: Math.random().toString(36).slice(2), name: file.name, progress: 0, error: null }
+    const entry = { id: Math.random().toString(36).slice(2), name: file.name, file, progress: 0, error: null }
     S.uploads = [...S.uploads, entry]
     return { file, entry }
   })
@@ -30,7 +30,7 @@ export async function uploadClips(files, onEach) {
         entry.error = e.message
         toast(`${file.name}: ${e.message}`, 'err', 7000)
       } finally {
-        S.uploads = S.uploads.filter(u => u !== entry)
+        if (!entry.error) S.uploads = S.uploads.filter(u => u !== entry)
         notify()
       }
     }

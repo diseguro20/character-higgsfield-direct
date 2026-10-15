@@ -1272,8 +1272,8 @@ app.post('/api/jobs/:id/retry', async (req, res) => {
   if (job.kind !== 'take' || !['failed', 'canceled'].includes(job.status)) return res.status(409).json({ error: 'Só é possível reenviar uma geração de vídeo encerrada com erro ou cancelada.' });
   try {
     const retried = await createTakeJob(req, res, {
-      characterIds: [job.input.characterId], clipIds: [job.input.clipId],
-      prompt: job.input.prompt, swapModels: [job.input.swapModel]
+      characterIds: job.input.characterIds || [job.input.characterId], clipIds: [job.input.clipId],
+      prompt: job.input.prompt, swapModels: [job.input.swapModel], cast: job.input.cast
     });
     retried.retryOf = job.id;
     writeJson(JOBS_FILE, readJson(JOBS_FILE, []));
@@ -1355,14 +1355,20 @@ app.post('/api/estimate', (req, res) => {
   const clips = readJson(CLIPS_FILE, []);
   const selected = Array.isArray(clipIds) ? clipIds.map(id => clips.find(c => c.id === id && owns(req, c))) : [];
   if (!selected.length || selected.some(clip => !clip)) return res.status(400).json({ error: 'Selecione vídeos válidos.' });
-  if (Array.isArray(cast) && cast.length > 1) return res.status(400).json({ error: 'A geração com elenco simultâneo não está disponível nesta conexão.' });
+  const combined = Array.isArray(cast) && cast.length > 1;
+  if (Array.isArray(characterIds) && characterIds.length > 1 && !combined) return res.status(409).json({ error: 'Escolha as posições dos personagens para gerar um único vídeo com o elenco.' });
+  if (combined && (clipIds?.length !== 1 || swapModels?.length !== 1)) return res.status(400).json({ error: 'Para o elenco, selecione um vídeo base e uma qualidade por vez.' });
+  if (combined && (!Array.isArray(characterIds) || cast.length > 4 || cast.length !== characterIds.length
+    || cast.some((member, index) => !member || member.characterId !== characterIds[index]
+      || !['left', 'right', 'middle', 'first', 'second'].includes(member.target))
+    || new Set(cast.map(member => member.target)).size !== cast.length)) return res.status(400).json({ error: 'Defina uma posição diferente para cada personagem do elenco.' });
   const models = Array.isArray(swapModels) && swapModels.length ? swapModels : ['hf-genjutsu-1080p'];
   if (models.some(id => !['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(id))) return res.status(400).json({ error: 'Qualidade de vídeo inválida.' });
   const durations = selected.map(clip => Math.ceil(Number(clip.info?.duration)));
   if (durations.some(duration => !Number.isFinite(duration) || duration < 4 || duration > 30)) return res.status(400).json({ error: 'O Genjutsu aceita vídeos de 4 a 30 segundos.' });
   const session = getSession(req);
   const userCredits = session?.higgsfield?.credits || 0;
-  const characterCount = Math.max(1, Array.isArray(characterIds) ? characterIds.length : 1);
+  const characterCount = combined ? 1 : Math.max(1, Array.isArray(characterIds) ? characterIds.length : 1);
   const duration = durations.reduce((total, seconds) => total + seconds, 0);
   const credits = characterCount * models.reduce((total, id) => total + durations.reduce((sum, seconds) => sum + seconds * (id === 'hf-genjutsu-720p' ? 7 : 20), 0), 0);
 
@@ -1411,22 +1417,41 @@ function takeMedia(req, mediaUrl, flag, index) {
     } };
 }
 
-async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapModels }) {
+async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapModels, cast }) {
   const session = getSession(req);
   if (!session?.higgsfield?.connected) throw takeFailure('Conecte sua conta Higgsfield para gerar vídeos.', 401);
   if (!session.higgsfield.token || !session.higgsfield.refreshToken) throw takeFailure('Conecte novamente sua conta Higgsfield para gerar.', 401);
-  const character = readJson(CHARACTERS_FILE, []).find(c => c.id === characterIds?.[0] && owns(req, c));
+  const characters = (characterIds || []).map(id => readJson(CHARACTERS_FILE, []).find(c => c.id === id && owns(req, c)));
+  const character = characters[0];
   const clip = readJson(CLIPS_FILE, []).find(c => c.id === clipIds?.[0] && owns(req, c));
-  if (!character || !clip) throw takeFailure('Selecione um personagem e um vídeo base no Estúdio.');
+  if (!character || characters.some(item => !item) || !clip) throw takeFailure('Selecione personagens e um vídeo base válidos no Estúdio.');
+  const combined = characters.length > 1;
+  if (combined && (!Array.isArray(cast) || cast.length !== characters.length || characters.length > 4
+    || cast.some((member, index) => !member || member.characterId !== characters[index].id
+      || !['left', 'right', 'middle', 'first', 'second'].includes(member.target))
+    || new Set(cast.map(member => member.target)).size !== cast.length)) {
+    throw takeFailure('Defina uma posição diferente para cada personagem antes de gerar o vídeo com o elenco.');
+  }
   const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
   if (!['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(modelId)) throw takeFailure('Qualidade de vídeo inválida.');
   const duration = Number(clip.info?.duration);
   if (!Number.isFinite(duration) || duration < 4 || duration > 30) throw takeFailure('O Genjutsu aceita vídeos de 4 a 30 segundos.');
-  const refs = (character.images || []).filter(image => image.useAsRef);
+  const refs = combined ? characters.map(item => {
+    const available = (item.images || []).filter(image => image.useAsRef);
+    return available.find(image => image.id === item.cover) || available[0];
+  }) : (character.images || []).filter(image => image.useAsRef);
   if (!refs.length) throw takeFailure('Marque ao menos uma foto real do personagem como referência.');
+  if (refs.some(image => !image)) throw takeFailure('Cada personagem do elenco precisa de uma foto marcada como referência.');
   if (refs.length > 8) throw takeFailure('O Genjutsu aceita até oito fotos de referência.');
   const media = [takeMedia(req, clip.url, '--video-references', 0),
     ...refs.map((image, index) => takeMedia(req, image.url, '--image-references', index))];
+  const castPrompt = combined ? cast.map((member, index) => {
+    const where = { left: 'left', right: 'right', middle: 'center', first: 'first appearing', second: 'second appearing' }[member.target];
+    return `@Image ${index + 1} is the reference for the ${where} person in the original video${member.cue ? ` (${String(member.cue).slice(0, 80)})` : ''}. Replace that person with this character.`;
+  }).join(' ') : '';
+  const generationPrompt = combined
+    ? `${prompt || ''} ${castPrompt} Keep both characters in the same single video. Preserve their separate identities, positions, interactions, camera and motion. Do not merge faces or duplicate people.`.trim()
+    : prompt || `Replace the actor with ${character.name}, photorealistic, preserve natural motion`;
   const balance = await fetchRealHiggsfieldBalance(session.higgsfield);
   if (!balance) throw takeFailure('Não foi possível confirmar o saldo do Higgsfield. Atualize a conexão e tente novamente.', 502);
   session.higgsfield.credits = balance.credits;
@@ -1438,9 +1463,9 @@ async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapMode
   const submittedAt = new Date().toISOString();
   const job = {
     id: `take_${crypto.randomUUID()}`, userId: session.user.id,
-    title: `${character.name} · ${clip.name}`, kind: 'take', status: 'running',
+    title: `${characters.map(item => item.name).join(' + ')} · ${clip.name}`, kind: 'take', status: 'running',
     stage: 'submitting', billing: 'own', createdAt: submittedAt,
-    input: { characterId: character.id, clipId: clip.id, swapModel: modelId, prompt: prompt || '' },
+    input: { characterId: character.id, characterIds: characters.map(item => item.id), cast: combined ? cast : null, clipId: clip.id, swapModel: modelId, prompt: prompt || '' },
     price_credits: expectedCost,
     outputs: { thumbUrl: clip.thumbUrl },
     steps: [{ key: 'swap', status: 'running', parts: [{ status: 'running', submittedAt }] }]
@@ -1451,7 +1476,7 @@ async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapMode
   try {
     const previousToken = session.higgsfield.token;
     const result = await higgsfieldCli.invoke(['generate', 'create', 'hf_mult_motion_control',
-      '--prompt', prompt || `Replace the actor with ${character.name}, photorealistic, preserve natural motion`,
+      '--prompt', generationPrompt,
       '--resolution', modelId === 'hf-genjutsu-720p' ? '720p' : '1080p'], session, media);
     const submitted = Array.isArray(result) ? result[0] : result;
     const providerId = typeof submitted === 'string' ? submitted.trim() : submitted?.id || submitted?.job_id;
@@ -1523,7 +1548,20 @@ app.post('/api/takes', async (req, res) => {
     const clipIds = Array.isArray(input.clipIds) ? [...new Set(input.clipIds)] : [];
     const swapModels = Array.isArray(input.swapModels) && input.swapModels.length ? [...new Set(input.swapModels)] : ['hf-genjutsu-1080p'];
     if (!characterIds.length || !clipIds.length) throw takeFailure('Selecione um personagem e um vídeo base no Estúdio.');
-    if (Array.isArray(input.cast) && input.cast.length > 1) throw takeFailure('A geração com elenco simultâneo não está disponível nesta conexão.');
+    const combined = characterIds.length > 1;
+    const cast = combined ? input.cast : null;
+    if (combined && (clipIds.length !== 1 || swapModels.length !== 1)) {
+      throw takeFailure('Para o elenco, selecione um vídeo base e uma qualidade por vez.', 409);
+    }
+    if (combined && (!Array.isArray(cast) || cast.length !== characterIds.length || cast.length > 4
+      || cast.some((member, index) => !member || member.characterId !== characterIds[index]
+        || !['left', 'right', 'middle', 'first', 'second'].includes(member.target))
+      || new Set(cast.map(member => member.target)).size !== cast.length)) {
+      throw takeFailure('Defina posições diferentes para gerar um único vídeo com os personagens selecionados.', 409);
+    }
+    if (combined && !Number.isFinite(Number(input.expected_total_credits))) {
+      throw takeFailure('Confira o orçamento para gerar um único vídeo com o elenco.', 409);
+    }
     const quote = clipIds.reduce((total, id) => {
       const clip = readJson(CLIPS_FILE, []).find(item => item.id === id && owns(req, item));
       const duration = Number(clip?.info?.duration);
@@ -1532,16 +1570,17 @@ app.post('/api/takes', async (req, res) => {
         if (!['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(model)) throw takeFailure('Qualidade de vídeo inválida.');
         return sum + Math.ceil(duration) * (model === 'hf-genjutsu-720p' ? 7 : 20);
       }, 0);
-    }, 0) * characterIds.length;
+    }, 0) * (combined ? 1 : characterIds.length);
     if (Number.isFinite(Number(input.expected_total_credits)) && input.expected_total_credits != null && Number(input.expected_total_credits) !== quote) {
       return res.status(409).json({ code: 'price_changed', error: 'O orçamento mudou. Confira antes de gerar.', total_credits: quote });
     }
     const jobs = [];
-    for (const characterId of characterIds) {
+    for (const characterId of combined ? [null] : characterIds) {
       for (const clipId of clipIds) {
         for (const modelId of swapModels) {
           try {
-            jobs.push(await createTakeJob(req, res, { characterIds: [characterId], clipIds: [clipId], prompt: input.prompt, swapModels: [modelId] }));
+            jobs.push(await createTakeJob(req, res, { characterIds: combined ? characterIds : [characterId],
+              clipIds: [clipId], prompt: input.prompt, swapModels: [modelId], cast }));
           } catch (error) {
             if (!jobs.length) throw error;
             return res.json({ jobs, error: `Após ${jobs.length} envio(s), o próximo falhou: ${error.message}` });

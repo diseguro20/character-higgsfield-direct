@@ -2,7 +2,7 @@
 // Upscale fica para depois (no vídeo pronto) ou junto, se quiser.
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { html, usd, credits, cr, queueText, dayMonth, dur, resLabel, Badge, modelBadges, Toggle, Seg, jobProgress, plural, useDraft, remoteInfo, confirmDialog, Modal, Spinner, StepsProgress, PausedBanner } from '../ui.js'
-import { S, useStore, loadPref, savePref, toast, characterById, modelById, clipById, castNames, refusalReason, projectById, projectChars, openWallet, modelCreditsPerSecond, higgsfield, upsertJob } from '../state.js'
+import { S, useStore, notify, loadPref, savePref, toast, characterById, modelById, clipById, castNames, refusalReason, projectById, projectChars, openWallet, modelCreditsPerSecond, higgsfield, upsertJob } from '../state.js'
 import { estimateText, higgsfieldBlock, higgsfieldErrorOf, ownBudgetText, noCreditsText, liveHiggsfieldError, jobCredits, retryTitle, higgsfieldFree, canCancel } from '../cloud.js'
 import { HiggsfieldWarn, HiggsfieldActions, higgsfieldErrorState, runHf, cancelJob } from './account.js'
 import { api } from '../api.js'
@@ -549,6 +549,7 @@ function sourceTip(src) {
 function ClipsCol({ sel, setSel, model, cut, onUseReserved }) {
   useStore()
   const input = useRef(null)
+  const [pickError, setPickError] = useState(null)
   const [trim, setTrim] = useState(null)
   const toggle = id => setSel(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]))
   // Character Online: limites do vídeo base à vista (duração do modelo, tamanho do servidor) e o arquivo grande demais
@@ -558,10 +559,21 @@ function ClipsCol({ sel, setSel, model, cut, onUseReserved }) {
   const pick = all => {
     const files = [...all].filter(f => {
       if (!(f.size > maxMb * 1024 * 1024)) return true
-      toast(`${all.length > 1 ? `${f.name}: ` : ''}Esse vídeo tem ${Math.ceil(f.size / 1024 / 1024)} MB e o máximo é ${maxMb} MB. Exporte em 1080p e envie de novo.`, 'err', 9000)
+      setPickError(`${f.name}: esse vídeo tem ${Math.ceil(f.size / 1024 / 1024)} MB e o máximo é ${maxMb} MB. Exporte em 1080p e envie de novo.`)
       return false
     })
-    if (files.length || !all.length) uploadClips(files, c => setSel(p => (p.includes(c.id) ? p : [...p, c.id])))
+    if (files.length) {
+      setPickError(null)
+      uploadClips(files, c => setSel(p => (p.includes(c.id) ? p : [...p, c.id])))
+    }
+  }
+  const dismissUpload = entry => {
+    S.uploads = S.uploads.filter(item => item !== entry)
+    notify()
+  }
+  const retryUpload = entry => {
+    dismissUpload(entry)
+    uploadClips([entry.file], c => setSel(p => (p.includes(c.id) ? p : [...p, c.id])))
   }
   const remove = async (e, c) => {
     e.stopPropagation()
@@ -589,13 +601,14 @@ function ClipsCol({ sel, setSel, model, cut, onUseReserved }) {
     <${StepHead} n="2" title="Vídeo base" done=${sel.length}
       hint=${sel.length ? html`${plural(sel.length, 'escolhido', 'escolhidos')} · <a href="#" onClick=${e => { e.preventDefault(); setSel([]) }}>limpar</a>` : 'arraste para a janela'} />
     <div class="panel__body">
-      <div class="drop drop--c" onClick=${() => input.current.click()}>
+      <label class="drop drop--c" style="position:relative;cursor:pointer">
         <span class="drop__plus">+</span><div><b>Solte ou escolha vídeos de ${range}</b><div class="small dim">MP4, MOV ou WEBM, até ${maxMb} MB</div></div>
-        <input ref=${input} type="file" accept="video/*,.mov,.mp4,.m4v" multiple hidden onChange=${e => { pick(e.target.files); e.target.value = '' }} />
-      </div>
+        <input ref=${input} type="file" accept="video/*,.mov,.mp4,.m4v,.webm" multiple aria-label="Escolher vídeos do dispositivo" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer" onChange=${e => { pick(e.target.files); e.target.value = '' }} />
+      </label>
+      ${pickError ? html`<div class="small" role="alert" style="color:var(--coral)">${pickError}</div>` : null}
       <${LinkBox} range=${range} />
       ${downloads.map(j => html`<${DownloadRow} key=${j.id} j=${j} onPickFile=${() => input.current?.click()} />`)}
-      ${S.uploads.map(u => html`<div key=${u.id} class="stack" style="margin-top:8px;gap:4px"><div class="row small"><span class="grow ellipsis">${u.name}</span><span class="pixel">${Math.round(u.progress * 100)}%</span></div><div class="upload-bar"><i style=${{ width: `${u.progress * 100}%` }}></i></div></div>`)}
+      ${S.uploads.map(u => html`<div key=${u.id} class="stack" style="margin-top:8px;gap:4px"><div class="row small"><span class="grow ellipsis">${u.name}</span>${u.error ? html`<button class="btn btn--xs" onClick=${() => retryUpload(u)}>Tentar novamente</button><button class="btn btn--quiet btn--xs" onClick=${() => dismissUpload(u)} title="Dispensar erro">✕</button>` : html`<span class="pixel">${Math.round(u.progress * 100)}%</span>`}</div>${u.error ? html`<div class="small" role="alert" style="color:var(--coral)">${u.error}</div>` : html`<div class="upload-bar"><i style=${{ width: `${u.progress * 100}%` }}></i></div>`}</div>`)}
       <div class="clips" style="gap:8px;margin-top:10px">${S.clips.map(c => {
         const trimmed = Math.abs(len(c) - c.info.duration) > 0.15
         // "Primeiros 30 segundos" escolhido no passo 3: o vídeo escolhido que o corte muda (mais de 31 s) usa só o começo.
@@ -702,12 +715,13 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   // ou quando o saldo sobe (Atualizar saldo, evento ao vivo): aí vale a conta de agora (short)
   const hfWarn = hfBlock || liveHiggsfieldError(hfErr, hf)
   const swap = modelById(cfg.swapModels[0])
-  const collab = cfg.collab && chars.length > 1
-  // collab: o elenco todo entra num vídeo só
-  const count = (collab ? 1 : chars.length) * clips.length * cfg.swapModels.length
+  const collab = chars.length > 1
+  // Todos os personagens selecionados entram no mesmo pedido para cada vídeo base.
+  const count = clips.length * cfg.swapModels.length
   const castMax = maxCastOf(cfg)
-  const castBad = collab && chars.length > castMax
-  const castShort = cfg.collab && chars.length === 1
+  const castBad = collab && (chars.length > castMax || new Set(chars.map((id, i) => castTarget(castMeta, id, i, chars.length))).size !== chars.length)
+  const castMultipleOutputs = collab && (clips.length !== 1 || cfg.swapModels.length !== 1)
+  const castShort = false
   const [promptDraft, setPromptDraft] = useDraft(cfg.prompt || '', 'prompt')
   // Character Online: hospedagem paga (vídeos grátis que faltam; acabaram: o botão de pagar)
   const pw = paywallOf()
@@ -756,7 +770,7 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   }
 
   async function go() {
-    if (!count || busy || castBad || castShort || short) return
+    if (!count || busy || castBad || castMultipleOutputs || castShort || short) return
     setHfErr(null)
     if (hfBlock) return
     const missing = cfg.swapModels.map(modelById).filter(m => m && !m.configured)
@@ -767,6 +781,15 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
     setBusy(true)
     askNotifications()
     const seen = est && est.key === estKey ? est.credits : undefined
+    if (!Number.isFinite(seen)) {
+      setBusy(false)
+      toast('Aguarde o orçamento aparecer antes de gerar.', 'err')
+      return
+    }
+    if (collab && !(await confirmDialog(`Gerar ${count === 1 ? 'um vídeo' : `${count} vídeos`} com ${chars.length} personagens juntos, usando ${seen ?? 'os créditos mostrados'} créditos do seu Higgsfield? Confira a posição de cada pessoa no passo 1.`, { ok: 'Confirmar geração', no: 'Voltar' }))) {
+      setBusy(false)
+      return
+    }
     let r = null
     try {
       // todos os personagens já confirmados acima: o servidor não pergunta de novo pelo par barrado
@@ -798,7 +821,7 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
     return () => window.removeEventListener('keydown', on)
   })
 
-  const ready = chars.length && clips.length && cfg.swapModels.length && !castBad && !castShort
+  const ready = chars.length && clips.length && cfg.swapModels.length && !castBad && !castMultipleOutputs && !castShort
   // os créditos da carteira (ou da conta Higgsfield própria) não cobrem o pedido (o saldo ao vivo vale mais que o da hora da cotação)
   const short = !!est && est.credits > 0 && hf?.mode !== 'none' && (own ? hfHave != null && hfHave < est.credits : S.me ? Number(S.wallet.balance_credits) < est.credits : est.enough === false)
   return html`<section class="panel">
@@ -807,7 +830,8 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
       <${ModelSelect} cfg=${cfg} setCfg=${setCfg} />
       <${QualitySelect} cfg=${cfg} setCfg=${setCfg} />
       <${DurationPick} clips=${clips} cfg=${cfg} setCfg=${setCfg} est=${est} count=${count} limits=${swap?.limits} />
-      ${castBad ? html`<div class="warnbox">${castMax > 1 ? `Este modelo faz collab de até ${castMax} personagens.` : `${swap?.familyLabel || 'Este modelo'} troca uma pessoa só. Para collab use o Higgsfield Genjutsu ou o Kling Omni Edit.`}</div>` : null}
+      ${castBad ? html`<div class="warnbox">${chars.length > castMax ? `Este modelo aceita até ${castMax} personagens no mesmo vídeo.` : 'Escolha uma posição diferente para cada personagem no passo 1.'}</div>` : null}
+      ${castMultipleOutputs ? html`<div class="warnbox">Para gerar um único vídeo com o elenco, escolha apenas um vídeo base e uma qualidade.</div>` : null}
       ${castShort ? html`<div class="warnbox">Collab ligado: escolha pelo menos 2 personagens no passo 1 (ou desligue o collab).</div>` : null}
       <${ExtraOptions} cfg=${cfg} setCfg=${setCfg} />
       <div class="stepbox" style="gap:8px">
@@ -825,10 +849,10 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
       <${HiggsfieldWarn} warn=${hfWarn || (short && own ? { kind: 'no_credits', text: noCreditsText(est.credits, hfHave, hfBalance) } : null)} />
     </div>
     <div class="panel__foot stack" style="gap:8px">
-      <span class="small muted">${ready ? `${collab ? `collab de ${chars.length}` : plural(chars.length, 'personagem', 'personagens')} × ${plural(clips.length, 'vídeo', 'vídeos')}${cfg.swapModels.length > 1 ? ` × ${cfg.swapModels.length} modelos` : ''}` : 'Escolha o personagem (1) e o vídeo (2)'}</span>
+      <span class="small muted">${ready ? `${collab ? `${chars.length} personagens no mesmo vídeo` : '1 personagem'} × ${plural(clips.length, 'vídeo base', 'vídeos base')}${cfg.swapModels.length > 1 ? ` × ${cfg.swapModels.length} modelos` : ''}` : 'Escolha o personagem (1) e o vídeo (2)'}</span>
       ${ready && est && est.credits ? html`<span class="small dim" title=${own ? 'Cada segundo cobrado usa os créditos da sua conta Higgsfield' : 'Cada segundo cobrado usa os créditos do Higgsfield Genjutsu, sem acréscimo'}>${[estimateText(est), own ? ownBudgetText(est.credits, hfHave, hfBalance) : credits(est.credits)].filter(Boolean).join(' · ')}</span>` : null}
-      <button class="gen-btn" disabled=${!ready || busy || short || !!hfBlock} onClick=${go}>
-        ${busy ? 'Enviando...' : count > 1 ? `Gerar ${count} vídeos` : 'Gerar'}
+      <button class="gen-btn" disabled=${!ready || busy || short || !!hfBlock || est?.key !== estKey} onClick=${go}>
+        ${busy ? 'Enviando...' : count > 1 ? `Gerar ${count} vídeos` : collab ? `Gerar 1 vídeo com ${chars.length} personagens` : 'Gerar'}
         ${est && est.credits ? html`<span class="gen-btn__cost" title=${own ? 'Créditos da sua conta Higgsfield que este pedido usa' : 'Créditos reservados ao gerar. Só são descontados quando o vídeo fica pronto; se ele for recusado ou der erro, voltam todos.'}>${cr(est.credits)}</span>` : null}
         <span class="kbd">⌘↵</span>
       </button>
@@ -975,7 +999,7 @@ export function Studio() {
   const wrap = setter => v => setter(prev => (typeof v === 'function' ? v(prev) : v))
   const swap = modelById(cfg.swapModels[0])
   return html`<div class="studio4">
-    <${CharactersCol} sel=${validChars} setSel=${wrap(setChars)} model=${swap} collab=${!!cfg.collab} setCollab=${v => setCfg({ ...cfg, collab: v })} castMeta=${castMeta} setCastMeta=${setCastMeta} />
+    <${CharactersCol} sel=${validChars} setSel=${wrap(setChars)} model=${swap} collab=${validChars.length > 1} setCollab=${v => setCfg({ ...cfg, collab: v })} castMeta=${castMeta} setCastMeta=${setCastMeta} />
     <${ClipsCol} sel=${validClips} setSel=${wrap(setClips)} model=${swap} cut=${cutOf(cfg)} onUseReserved=${c => {
       setChars([c.reservedFor]); setClips([c.id])
       if (cfg.collab) setCfg({ ...cfg, collab: false })

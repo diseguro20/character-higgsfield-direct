@@ -116,7 +116,8 @@ async function request(method, route, body, contentType = 'application/json') {
   assert.equal((await request('POST', `/api/jobs/${job.id}/retry`, {})).status, 409);
   assert.equal(JSON.parse((await request('POST', '/api/estimate', { clipIds: ['clip_test'], swapModels: ['hf-genjutsu-720p'] })).body).credits, 63);
   assert.equal(JSON.parse((await request('POST', '/api/estimate', { clipIds: ['clip_test'], swapModels: ['hf-genjutsu-1080p'] })).body).credits, 180);
-  assert.equal(JSON.parse((await request('POST', '/api/estimate', { characterIds: ['a', 'b'], clipIds: ['clip_test'], swapModels: ['hf-genjutsu-720p', 'hf-genjutsu-1080p'] })).body).credits, 486);
+  assert.equal((await request('POST', '/api/estimate', { characterIds: ['a', 'b'], clipIds: ['clip_test'], swapModels: ['hf-genjutsu-720p'] })).status, 409);
+  assert.equal(JSON.parse((await request('POST', '/api/estimate', { characterIds: ['a', 'b'], cast: [{ characterId: 'a', target: 'left' }, { characterId: 'b', target: 'right' }], clipIds: ['clip_test'], swapModels: ['hf-genjutsu-720p'] })).body).credits, 63);
   assert.equal((await request('POST', '/api/estimate', { clipIds: ['missing'], swapModels: ['hf-genjutsu-720p'] })).status, 400);
   assert.equal((await request('POST', '/api/takes', { characterIds: [character.id], clipIds: ['missing'] })).status, 401);
   assert.equal((await request('DELETE', `/api/reference-images/${reference.id}`)).status, 200);
