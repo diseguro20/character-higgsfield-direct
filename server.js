@@ -1680,9 +1680,7 @@ function startServer(port) {
     }
   });
 
-  // Inicia listeners OAuth dedicados nas portas 8765 e 3334
-  startHiggsfieldCallbackServer(8765);
-  startHiggsfieldCallbackServer(3334);
+  // Sem listener de loopback local para permitir o fluxo idêntico ao site original (copiar e colar a URL após autorização)
 }
 
 if (require.main === module) {

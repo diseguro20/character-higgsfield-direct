@@ -1,11 +1,12 @@
 {
   "connected": true,
-  "status": "auth_error",
+  "status": "active",
   "email": "sirilisworks3@gmail.com",
   "userId": "user_3KOFf1GutHdSGplLiBGJVX0XZk1",
-  "token": "",
-  "refreshToken": "",
-  "credits": null,
-  "plan": "",
-  "checkedAt": "2026-10-14T20:17:00.000Z"
+  "token": "oat_OYQRHSNWH29GPJMR2HXDZY508KQ67ZYE",
+  "refreshToken": "N2M5MTE3NDUTODBLYI01MMUYLWFIOTETOTHKODQ0ZJNINGEW",
+  "workspaceId": "54e977f6-fece-4649-8e44-b86cf8e406e4",
+  "credits": 560,
+  "plan": "plus",
+  "checkedAt": "2026-10-15T03:09:48.505Z"
 }
