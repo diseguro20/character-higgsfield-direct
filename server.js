@@ -1034,7 +1034,7 @@ function createHiggsfieldLogin(req) {
     code_challenge_method: 'S256',
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'openid email profile offline_access user:org:read',
+    scope: 'email profile offline_access user:org:read',
     state: state
   }).toString();
 
@@ -1437,9 +1437,23 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
     if (rawInput) {
       try {
         const parsed = new URL(rawInput.startsWith('http') ? rawInput : `http://${rawInput}`);
+        if (parsed.searchParams.get('error')) {
+          const desc = parsed.searchParams.get('error_description') || parsed.searchParams.get('error');
+          return res.status(400).json({
+            error: `Erro retornado pelo Higgsfield: ${desc}. Clique em Reiniciar login e tente novamente.`
+          });
+        }
         authCode = parsed.searchParams.get('code');
         authState = parsed.searchParams.get('state');
       } catch (e) {
+        const me = rawInput.match(/[?&]error=([^&]+)/);
+        if (me) {
+          const med = rawInput.match(/[?&]error_description=([^&]+)/);
+          const desc = med ? decodeURIComponent(med[1].replace(/\+/g, ' ')) : me[1];
+          return res.status(400).json({
+            error: `Erro retornado pelo Higgsfield: ${desc}. Clique em Reiniciar login e tente novamente.`
+          });
+        }
         const m = rawInput.match(/[?&]code=([a-zA-Z0-9_\-]+)/);
         if (m) authCode = m[1];
         const ms = rawInput.match(/[?&]state=([a-zA-Z0-9_\-]+)/);
