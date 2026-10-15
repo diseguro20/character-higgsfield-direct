@@ -39,6 +39,17 @@ server.listen(0, '127.0.0.1', async () => {
       ws.send(JSON.stringify({ id: messageId, method, params }));
     });
     await send('Runtime.enable'); await send('Log.enable'); await send('Network.enable'); await send('Page.enable');
+    if (process.argv.includes('--owner')) {
+      const key = fs.readFileSync(path.join(os.homedir(), '.config', 'character-school', 'owner-access-key.txt'), 'utf8').trim();
+      const login = await fetch('https://character-higgsfield-direct.vercel.app/api/auth/owner', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key })
+      });
+      if (!login.ok) throw new Error(`Owner login failed: HTTP ${login.status}`);
+      const cookie = /^character_session=([^;]+)/.exec(login.headers.get('set-cookie') || '')?.[1];
+      if (!cookie) throw new Error('Owner login did not return a cookie');
+      const applied = await send('Network.setCookie', { name: 'character_session', value: cookie, url: 'https://character-higgsfield-direct.vercel.app', httpOnly: true });
+      if (applied.error || applied.result?.success === false) throw new Error('Could not set owner cookie in browser');
+    }
     await send('Page.navigate', { url: process.argv[2] || 'https://character-higgsfield-direct.vercel.app/app/' });
     await new Promise(resolve => setTimeout(resolve, 7000));
     const state = await send('Runtime.evaluate', { expression: 'JSON.stringify({title:document.title,appLength:document.querySelector("#app")?.innerHTML.length,body:document.body.innerText.slice(0,200)})', returnByValue: true });
