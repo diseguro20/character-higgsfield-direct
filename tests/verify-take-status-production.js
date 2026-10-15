@@ -24,3 +24,10 @@ const job = call(`/api/jobs/${record.id}/status`, ['--header', `Cookie: ${cookie
 if (job.error) throw new Error(job.error);
 console.log(`Production take status: ${job.status}, provider: ${job.providerStatus}, video: ${!!job.outputs?.masterUrl}.`);
 if (job.status === 'failed') process.exitCode = 1;
+if (job.status === 'done') {
+  if (!/^https:\/\//.test(job.outputs.masterUrl)) throw new Error('Video URL is not HTTPS.');
+  fetch(job.outputs.masterUrl, { method: 'HEAD' }).then(response => {
+    if (!response.ok) throw new Error(`Video URL returned HTTP ${response.status}.`);
+    console.log(`Production video URL reachable: HTTP ${response.status}.`);
+  }).catch(error => { console.error(error.message); process.exitCode = 1; });
+}
