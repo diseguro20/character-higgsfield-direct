@@ -97,17 +97,20 @@ let takePoll = null
 let pollingTakes = false
 async function pollRunningTakes() {
   if (pollingTakes || S.auth !== 'ok') return
-  const active = S.jobs.filter(job => job.kind === 'take' && job.status === 'running' && job.providerRequestId)
+  const active = S.jobs.filter(job => (job.kind === 'take' || (job.kind === 'image' && job.subkind === 'views')) && job.status === 'running' && job.providerRequestId)
   if (!active.length) return
   pollingTakes = true
   try {
+    let imageFinished = false
     for (const job of active) {
       try {
         const updated = await api.get(`/api/jobs/${encodeURIComponent(job.id)}/status`)
         apply({ type: 'job', item: updated })
+        if (job.kind === 'image' && updated.status === 'done') imageFinished = true
       } catch {}
     }
     notify()
+    if (imageFinished) await load()
   } finally { pollingTakes = false }
 }
 export function connect() {

@@ -451,7 +451,8 @@ export function CharacterDetail({ id, onClose }) {
   const busyViews = viewsBusy(c)
   const makeViews = async () => {
     if (!(await askViews([c]))) return
-    runHf(() => api.post(`/api/characters/${c.id}/views`, {}), 'Gerando as vistas. Elas entram aqui sozinhas.', setHfErr)
+    const result = await runHf(() => api.post(`/api/characters/${c.id}/views`, {}), 'Gerando as vistas. Elas entram aqui sozinhas.', setHfErr)
+    for (const job of result?.jobs || []) upsertJob(job)
   }
   // Character Online: corpo inteiro, só quando o aluno pede (nunca por padrão), com o preço e a pergunta antes. Conta no
   // plano Free do Higgsfield: botão desligado com o aviso de assinar (o servidor também barra)

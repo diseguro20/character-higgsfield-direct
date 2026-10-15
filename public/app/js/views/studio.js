@@ -2,7 +2,7 @@
 // Upscale fica para depois (no vídeo pronto) ou junto, se quiser.
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { html, usd, credits, cr, queueText, dayMonth, dur, resLabel, Badge, modelBadges, Toggle, Seg, jobProgress, plural, useDraft, remoteInfo, confirmDialog, Modal, Spinner, StepsProgress, PausedBanner } from '../ui.js'
-import { S, useStore, loadPref, savePref, toast, characterById, modelById, clipById, castNames, refusalReason, projectById, projectChars, openWallet, modelCreditsPerSecond, higgsfield } from '../state.js'
+import { S, useStore, loadPref, savePref, toast, characterById, modelById, clipById, castNames, refusalReason, projectById, projectChars, openWallet, modelCreditsPerSecond, higgsfield, upsertJob } from '../state.js'
 import { estimateText, higgsfieldBlock, higgsfieldErrorOf, ownBudgetText, noCreditsText, liveHiggsfieldError, jobCredits, retryTitle, higgsfieldFree, canCancel } from '../cloud.js'
 import { HiggsfieldWarn, HiggsfieldActions, higgsfieldErrorState, runHf, cancelJob } from './account.js'
 import { api } from '../api.js'
@@ -444,7 +444,10 @@ function CharactersCol({ sel, setSel, model, collab, setCollab, castMeta, setCas
   const viewsCost = needViews.reduce((n, c) => n + viewsCredits(c), 0)
   const makeViews = async () => {
     if (!(await askViews(needViews))) return
-    run(async () => { for (const c of needViews) await api.post(`/api/characters/${c.id}/views`, {}) }, 'Gerando as vistas. Elas entram sozinhas.')
+    run(async () => { for (const c of needViews) {
+      const result = await api.post(`/api/characters/${c.id}/views`, {})
+      for (const job of result.jobs || []) upsertJob(job)
+    } }, 'Gerando as vistas. Elas entram sozinhas.')
   }
   return html`<section class="panel">
     <${StepHead} n="1" title="Personagem" done=${chosen.length}

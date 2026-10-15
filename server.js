@@ -561,6 +561,7 @@ app.get('/api/state', (req, res) => {
         rank: 3,
         status: 'ready',
         character_credits: 60,
+        unitPrice: 1.5,
         badges: ['IA', 'Personagem'],
         description: 'Gera imagem âncora e 3 vistas de referência do personagem',
         docsUrl: 'https://higgsfield.ai'
@@ -1258,7 +1259,8 @@ app.delete('/api/jobs/:id', (req, res) => {
 app.get('/api/jobs/:id/status', async (req, res) => {
   const job = readJson(JOBS_FILE, []).find(j => j.id === req.params.id && owns(req, j));
   if (!job) return res.status(404).json({ error: 'Job não encontrado.' });
-  try { return res.json(await refreshTakeJob(req, res, job)); }
+  try { return res.json(job.kind === 'image' && job.subkind === 'views'
+    ? await refreshViewJob(req, res, job) : await refreshTakeJob(req, res, job)); }
   catch (error) { return res.status(502).json({ error: error.message }); }
 });
 
@@ -1349,24 +1351,20 @@ app.delete('/api/projects/:id', (req, res) => {
 
 // 7. ORÇAMENTO (ESTIMATE): Calcula os créditos e partes do vídeo
 app.post('/api/estimate', (req, res) => {
-  const { clipIds, swapModels } = req.body;
+  const { characterIds, clipIds, swapModels, cast } = req.body || {};
   const clips = readJson(CLIPS_FILE, []);
-  let totalSeconds = 0;
-
-  if (Array.isArray(clipIds)) {
-    clipIds.forEach(id => {
-      const c = clips.find(x => x.id === id && owns(req, x));
-      if (c) totalSeconds += Number(c.info?.duration || 10);
-    });
-  }
-
+  const selected = Array.isArray(clipIds) ? clipIds.map(id => clips.find(c => c.id === id && owns(req, c))) : [];
+  if (!selected.length || selected.some(clip => !clip)) return res.status(400).json({ error: 'Selecione vídeos válidos.' });
+  if (Array.isArray(cast) && cast.length > 1) return res.status(400).json({ error: 'A geração com elenco simultâneo não está disponível nesta conexão.' });
+  const models = Array.isArray(swapModels) && swapModels.length ? swapModels : ['hf-genjutsu-1080p'];
+  if (models.some(id => !['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(id))) return res.status(400).json({ error: 'Qualidade de vídeo inválida.' });
+  const durations = selected.map(clip => Math.ceil(Number(clip.info?.duration)));
+  if (durations.some(duration => !Number.isFinite(duration) || duration < 4 || duration > 30)) return res.status(400).json({ error: 'O Genjutsu aceita vídeos de 4 a 30 segundos.' });
   const session = getSession(req);
   const userCredits = session?.higgsfield?.credits || 0;
-  const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
-  const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 20;
-  if (!totalSeconds) return res.status(400).json({ error: 'Selecione um vídeo válido.' });
-  const duration = Math.min(30, Math.max(4, Math.ceil(totalSeconds)));
-  const credits = duration * ratePerSecond;
+  const characterCount = Math.max(1, Array.isArray(characterIds) ? characterIds.length : 1);
+  const duration = durations.reduce((total, seconds) => total + seconds, 0);
+  const credits = characterCount * models.reduce((total, id) => total + durations.reduce((sum, seconds) => sum + seconds * (id === 'hf-genjutsu-720p' ? 7 : 20), 0), 0);
 
   res.json({
     mode: 'own',
@@ -1375,8 +1373,8 @@ app.post('/api/estimate', (req, res) => {
     higgsfield_credits: userCredits,
     higgsfield_balance: userCredits,
     duration_choices: [
-      { max_seconds: null, duration_s: duration, parts_count: duration > 30 ? 2 : 1, credits },
-      { max_seconds: 30, duration_s: Math.min(30, duration), parts_count: 1, credits: Math.min(30, duration) * ratePerSecond }
+      { max_seconds: null, duration_s: duration, parts_count: selected.length, credits },
+      { max_seconds: 30, duration_s: duration, parts_count: selected.length, credits }
     ]
   });
 });
@@ -1518,8 +1516,40 @@ async function refreshTakeJob(req, res, job) {
 
 app.post('/api/takes', async (req, res) => {
   try {
-    const job = await createTakeJob(req, res, req.body || {});
-    res.json({ jobs: [job] });
+    const session = getSession(req);
+    if (!session?.higgsfield?.token || !session.higgsfield.refreshToken) throw takeFailure('Conecte novamente sua conta Higgsfield para gerar.', 401);
+    const input = req.body || {};
+    const characterIds = Array.isArray(input.characterIds) ? [...new Set(input.characterIds)] : [];
+    const clipIds = Array.isArray(input.clipIds) ? [...new Set(input.clipIds)] : [];
+    const swapModels = Array.isArray(input.swapModels) && input.swapModels.length ? [...new Set(input.swapModels)] : ['hf-genjutsu-1080p'];
+    if (!characterIds.length || !clipIds.length) throw takeFailure('Selecione um personagem e um vídeo base no Estúdio.');
+    if (Array.isArray(input.cast) && input.cast.length > 1) throw takeFailure('A geração com elenco simultâneo não está disponível nesta conexão.');
+    const quote = clipIds.reduce((total, id) => {
+      const clip = readJson(CLIPS_FILE, []).find(item => item.id === id && owns(req, item));
+      const duration = Number(clip?.info?.duration);
+      if (!clip || !Number.isFinite(duration) || duration < 4 || duration > 30) throw takeFailure('O Genjutsu aceita vídeos de 4 a 30 segundos.');
+      return total + swapModels.reduce((sum, model) => {
+        if (!['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(model)) throw takeFailure('Qualidade de vídeo inválida.');
+        return sum + Math.ceil(duration) * (model === 'hf-genjutsu-720p' ? 7 : 20);
+      }, 0);
+    }, 0) * characterIds.length;
+    if (Number.isFinite(Number(input.expected_total_credits)) && input.expected_total_credits != null && Number(input.expected_total_credits) !== quote) {
+      return res.status(409).json({ code: 'price_changed', error: 'O orçamento mudou. Confira antes de gerar.', total_credits: quote });
+    }
+    const jobs = [];
+    for (const characterId of characterIds) {
+      for (const clipId of clipIds) {
+        for (const modelId of swapModels) {
+          try {
+            jobs.push(await createTakeJob(req, res, { characterIds: [characterId], clipIds: [clipId], prompt: input.prompt, swapModels: [modelId] }));
+          } catch (error) {
+            if (!jobs.length) throw error;
+            return res.json({ jobs, error: `Após ${jobs.length} envio(s), o próximo falhou: ${error.message}` });
+          }
+        }
+      }
+    }
+    res.json({ jobs });
   } catch (error) {
     res.status(error.status || 502).json({ error: error.message });
   }
@@ -2287,16 +2317,122 @@ app.use('/api/admin', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/characters/:id/views', (req, res) => {
+const VIEW_PROMPTS = {
+  front: 'Create a photorealistic front-facing portrait of exactly the same person in the reference image. Preserve facial features, age, hair, clothing, lighting and background. One person only, natural anatomy.',
+  profile: 'Create a photorealistic side profile portrait of exactly the same person in the reference image, facing left. Preserve facial features, age, hair, clothing, lighting and background. One person only, natural anatomy.',
+  right: 'Create a photorealistic three-quarter view portrait of exactly the same person in the reference image, turned slightly to the right. Preserve facial features, age, hair, clothing, lighting and background. One person only, natural anatomy.',
+  fullbody: 'Create a photorealistic full body studio photo of exactly the same person in the reference image, standing with head and shoes fully visible. Preserve facial features, age, hair, clothing and lighting. One person only, natural anatomy.'
+};
+const VIEW_LABELS = { front: 'Frente', profile: 'Perfil', right: '3/4 direita', fullbody: 'Corpo inteiro' };
+const VIEW_CREDITS = 1.5;
+
+app.post('/api/characters/:id/views', async (req, res) => {
   const charId = req.params.id;
   const characters = readJson(CHARACTERS_FILE, []);
   const char = characters.find(c => c.id === charId);
   if (!char || !owns(req, char)) return res.status(404).json({ error: 'Personagem não encontrado' });
-
-  const baseImg = char.images[0] || (char.cover ? char.images.find(i => i.id === char.cover) : null);
+  if (char.library) return res.status(403).json({ error: 'As vistas da biblioteca já vêm prontas.' });
+  const baseImg = char.images.find(i => i.id === char.cover) || char.images[0];
   if (!baseImg) return res.status(400).json({ error: 'O personagem precisa de pelo menos uma imagem.' });
-  return res.status(501).json({ error: 'Geração de vistas ainda não configurada no Higgsfield.' });
+  const requested = req.body?.roles?.length ? req.body.roles.map(role => role === 'body' ? 'fullbody' : role) : ['front', 'profile', 'right'];
+  if (!requested.length || requested.some(role => !VIEW_PROMPTS[role])) return res.status(400).json({ error: 'Vista inválida.' });
+  const jobs = readJson(JOBS_FILE, []);
+  const active = jobs.filter(job => job.kind === 'image' && job.subkind === 'views' && job.input?.characterId === charId && job.status === 'running');
+  const roles = [...new Set(requested)].filter(role => !char.images.some(image => image.role === role) && !active.some(job => job.input.roles.includes(role)));
+  if (!roles.length) return res.json({ jobs: active });
+  const session = getSession(req);
+  if (!session?.higgsfield?.token || !session.higgsfield.refreshToken) return res.status(401).json({ error: 'Conecte novamente sua conta Higgsfield para gerar vistas.' });
+  try {
+    const balance = await fetchRealHiggsfieldBalance(session.higgsfield);
+    if (!balance) throw takeFailure('Não foi possível confirmar o saldo do Higgsfield.', 502);
+    session.higgsfield.credits = balance.credits;
+    session.higgsfield.available = balance.credits;
+    setSessionCookie(res, session);
+    if (balance.credits < roles.length * VIEW_CREDITS) throw takeFailure(`Créditos insuficientes no Higgsfield: são necessários ${roles.length * VIEW_CREDITS}.`, 409);
+    const submitted = [];
+    for (const role of roles) {
+      const job = {
+        id: `image_${crypto.randomUUID()}`, userId: session.user.id,
+        title: `${char.name} · ${VIEW_LABELS[role]}`, kind: 'image', subkind: 'views',
+        status: 'running', stage: 'submitting', billing: 'own', createdAt: new Date().toISOString(),
+        input: { characterId: charId, roles: [role], model: 'hf-character-image' },
+        price_credits: VIEW_CREDITS
+      };
+      jobs.unshift(job);
+      writeJson(JOBS_FILE, jobs);
+      await requestStore.getStore()?.lastWrite;
+      try {
+        const previousToken = session.higgsfield.token;
+        const result = await higgsfieldCli.invoke(['generate', 'create', 'nano_banana_flash',
+          '--prompt', `${VIEW_PROMPTS[role]} ${char.identityEn || char.description || ''}`,
+          '--resolution', '1k', '--aspect-ratio', role === 'fullbody' ? '2:3' : '3:4'], session,
+        [takeMedia(req, baseImg.url, '--image-references', 0)]);
+        const response = Array.isArray(result) ? result[0] : result;
+        const providerId = typeof response === 'string' ? response.trim() : response?.id || response?.job_id;
+        if (!providerId || !/^[a-f0-9-]{36}$/i.test(providerId)) throw new Error('O Higgsfield não retornou o identificador da imagem.');
+        if (session.higgsfield.token !== previousToken) setSessionCookie(res, session);
+        job.providerRequestId = providerId;
+        job.stage = 'generating';
+        job.providerStatus = response?.status || 'queued';
+      } catch (error) {
+        job.status = 'failed'; job.stage = 'failed'; job.error = error.message;
+      }
+      writeJson(JOBS_FILE, jobs);
+      broadcastEvent('job', job);
+      submitted.push(job);
+      if (job.status === 'failed') break;
+    }
+    res.json({ jobs: submitted });
+  } catch (error) { res.status(error.status || 502).json({ error: error.message }); }
 });
+
+async function refreshViewJob(req, res, job) {
+  if (job.status !== 'running' || !job.providerRequestId) return job;
+  const session = getSession(req);
+  if (!session?.higgsfield?.token || !session.higgsfield.refreshToken) throw takeFailure('Conecte novamente sua conta Higgsfield para acompanhar a imagem.', 401);
+  const previousToken = session.higgsfield.token;
+  const result = await higgsfieldCli.invoke(['generate', 'get', job.providerRequestId], session);
+  if (session.higgsfield.token !== previousToken) setSessionCookie(res, session);
+  const status = String(result.status || '').toLowerCase();
+  const jobs = readJson(JOBS_FILE, []);
+  const current = jobs.find(item => item.id === job.id);
+  if (!current || current.status !== 'running') return current || job;
+  current.providerStatus = status;
+  if (status === 'completed') {
+    try {
+      const source = result.result_url || result.image?.url || result.output?.image?.url || result.output?.image_url || result.image_url;
+      if (!/^https:\/\//i.test(source || '')) throw new Error('O Higgsfield não retornou uma imagem válida.');
+      const response = await fetch(source);
+      if (!response.ok) throw new Error('Não foi possível baixar a imagem gerada.');
+      const mime = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) throw new Error('O Higgsfield retornou um arquivo de imagem inválido.');
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > 20 * 1024 * 1024) throw new Error('Tamanho de imagem inválido.');
+      const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+      const filename = `${crypto.randomUUID()}.${ext}`;
+      saveUploadedBuffer(filename, buffer, mime);
+      const url = storageBucket ? `/api/uploads/${filename}` : `data:${mime};base64,${buffer.toString('base64')}`;
+      const characters = readJson(CHARACTERS_FILE, []);
+      const character = characters.find(item => item.id === current.input.characterId && owns(req, item));
+      const role = current.input.roles[0];
+      if (character && !character.images.some(image => image.role === role)) {
+        character.images.push({ id: `img_${crypto.randomUUID()}`, role, label: VIEW_LABELS[role], url, thumbUrl: url, useAsRef: true });
+        writeJson(CHARACTERS_FILE, characters);
+        broadcastEvent('character', character);
+      }
+      current.status = 'done'; current.stage = 'ready'; current.finishedAt = new Date().toISOString();
+      current.outputs = { imageUrls: [url], thumbUrl: url };
+    } catch (error) {
+      current.status = 'failed'; current.stage = 'failed'; current.error = error.message;
+    }
+  } else if (['failed', 'nsfw', 'canceled'].includes(status)) {
+    current.status = 'failed'; current.stage = 'failed';
+    current.error = String(result.error?.message || result.error || result.message || `Higgsfield: ${status}`).slice(0, 500);
+  }
+  writeJson(JOBS_FILE, jobs);
+  broadcastEvent('job', current);
+  return current;
+}
 
 // Inicialização com fallback de portas
 function startServer(port) {
