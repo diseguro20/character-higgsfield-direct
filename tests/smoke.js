@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 
 process.env.SESSION_SECRET = 'test-secret-only-never-use-in-production';
 process.env.OWNER_ACCESS_KEY = 'test-owner-access-key';
@@ -84,6 +85,13 @@ async function request(method, route, body, contentType = 'application/json') {
   assert.equal(r.status, 200);
   assert.ok(JSON.parse(r.body).url.startsWith('data:image/png;base64,'));
   assert.equal((await request('GET', JSON.parse(r.body).path)).status, 200);
+  const clipPath = path.join(tempDir, 'four-seconds.mp4');
+  const encoded = spawnSync(require('@ffmpeg-installer/ffmpeg').path,
+    ['-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=64x64:rate=10', '-t', '4', '-c:v', 'libx264', '-y', clipPath], { encoding: 'utf8' });
+  assert.equal(encoded.status, 0, encoded.stderr);
+  r = await request('POST', '/api/clips?name=four-seconds.mp4', fs.readFileSync(clipPath), 'video/mp4');
+  assert.equal(r.status, 200);
+  assert.equal(JSON.parse(r.body).info.duration, 4);
   r = await request('POST', '/api/reference-images?name=person.png', png, 'application/octet-stream');
   assert.equal(r.status, 200);
   const reference = JSON.parse(r.body).reference;

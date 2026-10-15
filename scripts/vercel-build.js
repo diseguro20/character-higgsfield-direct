@@ -8,4 +8,5 @@ if (installed.status !== 0) process.exit(installed.status || 1);
 
 if (process.platform !== 'win32') {
   fs.chmodSync(require('@ffmpeg-installer/ffmpeg').path, 0o755);
+  fs.chmodSync(require('@ffprobe-installer/ffprobe').path, 0o755);
 }

@@ -13,6 +13,7 @@
   "type": "commonjs",
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@higgsfield/cli": "1.1.26",
     "@vercel/blob": "^2.8.2",
     "axios": "^1.20.0",

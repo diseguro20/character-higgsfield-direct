@@ -11,6 +11,7 @@ hf.exe
 package/
 data/sessions.json
 data/projects.json
+.production-test-job.json
 
 .env*
 !.env.example

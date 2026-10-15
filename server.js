@@ -8,9 +8,11 @@ const { spawn } = require('child_process');
 const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 const higgsfieldCli = require('./higgsfieldCli');
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 const app = express();
 const DEFAULT_PORT = process.env.PORT || 3333;
