@@ -526,7 +526,7 @@ app.get('/api/state', (req, res) => {
         rank: 1,
         status: 'ready',
         limits: { outputLongSide: 1920, maxClipSeconds: 60, maxDuration: 29.7, minDuration: 4, maxCast: 4 },
-        credits_per_second: 11,
+        credits_per_second: 20,
         badges: ['1080p', 'Genjutsu'],
         description: 'Troca de personagem com movimento e cena idênticos mantendo o áudio original',
         docsUrl: 'https://higgsfield.ai'
@@ -646,7 +646,7 @@ app.get('/api/me', (req, res) => {
   res.json({
     user: session.user,
     wallet: { balance_credits: hf.credits || 0, reserved_credits: 0 },
-    pricing: { credits_per_second: 11, min_seconds: 4, character_credits: 60, character_image_credits: 15 },
+    pricing: { credits_per_second: 20, min_seconds: 4, character_credits: 60, character_image_credits: 15 },
     limits: { max_upload_mb: 350, maxClipSeconds: 60, maxDuration: 29.7, minDuration: 4 },
     features: {
       email_login: false,
@@ -2200,7 +2200,7 @@ app.post('/api/admin/paywall/transfer', (req, res) => {
 app.get('/api/admin/settings', (req, res) => {
   res.json({
     pricing: {
-      credits_per_second: 11,
+      credits_per_second: 20,
       min_seconds: 4,
       character_credits: 60,
       character_image_credits: 15,

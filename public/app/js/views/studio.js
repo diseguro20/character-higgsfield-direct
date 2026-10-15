@@ -157,7 +157,7 @@ function QualitySelect({ cfg, setCfg }) {
       options=${fam.map(x => ({
         value: x.id,
         label: `${x.quality} (${modelCreditsPerSecond(x)} cr/s)`,
-        desc: x.id.includes('720p') ? 'Mais rápido e econômico: usa apenas 7 créditos por segundo' : 'Resolução máxima Full HD: 11 créditos por segundo',
+        desc: x.id.includes('720p') ? 'Mais rápido e econômico' : 'Resolução máxima Full HD',
         price: `${cr(modelCreditsPerSecond(x))}/s`,
         disabled: !x.configured,
         disabledMsg: `Falta a chave do ${x.providerLabel}`
