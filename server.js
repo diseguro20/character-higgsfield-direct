@@ -1590,7 +1590,9 @@ function extractPkceFromState(state) {
 function createHiggsfieldLogin(req) {
   const verifier = base64Url(crypto.randomBytes(32));
   const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
-  const redirectUri = process.env.HF_OAUTH_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/callback`;
+  // Este client_id é do CLI oficial; Clerk aceita somente o callback loopback registrado.
+  // O aluno cola a URL resultante no formulário, que troca o código com este mesmo URI.
+  const redirectUri = 'http://localhost:8765/callback';
   const state = base64Url(crypto.randomBytes(24));
   const loginId = `login_${Date.now()}`;
 
@@ -2029,7 +2031,10 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
     }
 
     const fromState = extractPkceFromState(authState);
-    const session = getPkceSession(authState) || loginSession;
+    if (!authState || !loginSession || loginSession.state !== authState) {
+      return res.status(400).json({ error: 'O endereço de autorização não corresponde a este login. Reinicie a conexão.' });
+    }
+    const session = loginSession;
     let verifier = session?.verifier;
     const redirectUri = session?.redirectUri;
 
