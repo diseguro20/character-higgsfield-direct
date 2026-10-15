@@ -8,7 +8,7 @@ const { spawn } = require('child_process');
 const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const higgsfieldApi = require('./higgsfieldApi');
+const higgsfieldCli = require('./higgsfieldCli');
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
@@ -488,7 +488,7 @@ app.get('/api/state', (req, res) => {
         reserved_credits: 0
       },
       pricing: {
-        credits_per_second: 11,
+        credits_per_second: 20,
         min_seconds: 4,
         character_credits: 60,
         character_image_credits: 15
@@ -1260,7 +1260,7 @@ app.delete('/api/jobs/:id', (req, res) => {
 app.get('/api/jobs/:id/status', async (req, res) => {
   const job = readJson(JOBS_FILE, []).find(j => j.id === req.params.id && owns(req, j));
   if (!job) return res.status(404).json({ error: 'Job não encontrado.' });
-  try { return res.json(await refreshTakeJob(req, job)); }
+  try { return res.json(await refreshTakeJob(req, res, job)); }
   catch (error) { return res.status(502).json({ error: error.message }); }
 });
 
@@ -1271,7 +1271,7 @@ app.post('/api/jobs/:id/retry', async (req, res) => {
   if (!job || !owns(req, job)) return res.status(404).json({ error: 'Job não encontrado' });
   if (job.kind !== 'take' || !['failed', 'canceled'].includes(job.status)) return res.status(409).json({ error: 'Só é possível reenviar uma geração de vídeo encerrada com erro ou cancelada.' });
   try {
-    const retried = await createTakeJob(req, {
+    const retried = await createTakeJob(req, res, {
       characterIds: [job.input.characterId], clipIds: [job.input.clipId],
       prompt: job.input.prompt, swapModels: [job.input.swapModel]
     });
@@ -1287,16 +1287,7 @@ app.post('/api/jobs/:id/cancel', async (req, res) => {
   const job = jobs.find(j => j.id === id);
   if (!job || !owns(req, job)) return res.status(404).json({ error: 'Job não encontrado' });
   if (job.status !== 'running' || !job.providerRequestId) return res.status(409).json({ error: 'Este job não está em geração ativa.' });
-  const hf = getSession(req)?.higgsfield;
-  const credential = hf?.apiCredential || (hf?.apiKey && hf?.apiSecret ? `${hf.apiKey}:${hf.apiSecret}` : '');
-  if (!credential) return res.status(409).json({ error: 'Configure a chave Higgsfield desta conta para cancelar.' });
-  try { await higgsfieldApi.cancel(credential, job.providerRequestId); }
-  catch (error) { return res.status(502).json({ error: error.message }); }
-  job.status = 'canceled';
-  job.stage = 'canceled';
-  writeJson(JOBS_FILE, jobs);
-  broadcastEvent('job', job);
-  res.json(job);
+  return res.status(409).json({ error: 'O Higgsfield não oferece cancelamento de um Genjutsu em execução por esta conexão.' });
 });
 
 app.patch('/api/jobs/:id', (req, res) => {
@@ -1374,7 +1365,7 @@ app.post('/api/estimate', (req, res) => {
   const session = getSession(req);
   const userCredits = session?.higgsfield?.credits || 0;
   const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
-  const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 11;
+  const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 20;
   if (!totalSeconds) return res.status(400).json({ error: 'Selecione um vídeo válido.' });
   const duration = Math.min(30, Math.max(4, Math.ceil(totalSeconds)));
   const credits = duration * ratePerSecond;
@@ -1393,35 +1384,41 @@ app.post('/api/estimate', (req, res) => {
 });
 
 // 8. TAKES: envio assíncrono ao Genjutsu e consulta do resultado real
-function takeCredential(session) {
-  const hf = session?.higgsfield;
-  return hf?.apiCredential || (hf?.apiKey && hf?.apiSecret ? `${hf.apiKey}:${hf.apiSecret}` : '');
-}
-
 function takeFailure(message, status = 400) {
   const error = new Error(message);
   error.status = status;
   return error;
 }
 
-async function signedMediaUrl(req, mediaUrl) {
-  if (!storageBucket) throw takeFailure('Armazenamento persistente indisponível.', 503);
+function takeMedia(req, mediaUrl, flag, index) {
   const match = /^\/api\/uploads\/([a-zA-Z0-9._-]+)$/.exec(mediaUrl || '');
-  if (!match) throw takeFailure('Envie novamente a foto ou o vídeo antes de gerar.');
-  const file = storageBucket.file(`uploads/${match[1]}`);
-  let metadata;
-  try { [metadata] = await file.getMetadata(); }
-  catch { throw takeFailure('Arquivo de referência não encontrado. Envie-o novamente.'); }
-  if (metadata.metadata?.userId !== getSession(req).user.id) throw takeFailure('Arquivo de outra conta não pode ser usado.', 403);
-  const [url] = await file.getSignedUrl({ version: 'v4', action: 'read', expires: Date.now() + 24 * 60 * 60000 });
-  return url;
+  if (!match) {
+    const data = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(mediaUrl || '');
+    if (flag !== '--image-references' || !data) throw takeFailure('Envie novamente a foto ou o vídeo antes de gerar.');
+    return { flag, filename: `image-${index}.${data[1] === 'jpeg' ? 'jpg' : data[1]}`,
+      write: filename => fs.promises.writeFile(filename, Buffer.from(data[2], 'base64')) };
+  }
+  return { flag, filename: `${flag === '--video-references' ? 'video' : 'image'}-${index}${path.extname(match[1]) || (flag === '--video-references' ? '.mp4' : '.jpg')}`,
+    write: async filename => {
+      if (storageBucket) {
+        const file = storageBucket.file(`uploads/${match[1]}`);
+        let metadata;
+        try { [metadata] = await file.getMetadata(); }
+        catch { throw takeFailure('Arquivo de referência não encontrado. Envie-o novamente.'); }
+        if (metadata.metadata?.userId !== getSession(req).user.id) throw takeFailure('Arquivo de outra conta não pode ser usado.', 403);
+        await file.download({ destination: filename });
+      } else {
+        const cached = uploadedFilesBufferMap.get(match[1]);
+        if (cached) await fs.promises.writeFile(filename, cached.buffer);
+        else await fs.promises.copyFile(path.join(UPLOADS_DIR, match[1]), filename);
+      }
+    } };
 }
 
-async function createTakeJob(req, { characterIds, clipIds, prompt, swapModels }) {
+async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapModels }) {
   const session = getSession(req);
   if (!session?.higgsfield?.connected) throw takeFailure('Conecte sua conta Higgsfield para gerar vídeos.', 401);
-  const credential = takeCredential(session);
-  if (!credential) throw takeFailure('O login Higgsfield conectado não autoriza a API oficial Genjutsu. Esta geração precisa de autorização de API da própria conta.', 409);
+  if (!session.higgsfield.token || !session.higgsfield.refreshToken) throw takeFailure('Conecte novamente sua conta Higgsfield para gerar.', 401);
   const character = readJson(CHARACTERS_FILE, []).find(c => c.id === characterIds?.[0] && owns(req, c));
   const clip = readJson(CLIPS_FILE, []).find(c => c.id === clipIds?.[0] && owns(req, c));
   if (!character || !clip) throw takeFailure('Selecione um personagem e um vídeo base no Estúdio.');
@@ -1432,9 +1429,15 @@ async function createTakeJob(req, { characterIds, clipIds, prompt, swapModels })
   const refs = (character.images || []).filter(image => image.useAsRef);
   if (!refs.length) throw takeFailure('Marque ao menos uma foto real do personagem como referência.');
   if (refs.length > 8) throw takeFailure('O Genjutsu aceita até oito fotos de referência.');
-  const [videoUrl, ...imageUrls] = await Promise.all([
-    signedMediaUrl(req, clip.url), ...refs.map(image => signedMediaUrl(req, image.url))
-  ]);
+  const media = [takeMedia(req, clip.url, '--video-references', 0),
+    ...refs.map((image, index) => takeMedia(req, image.url, '--image-references', index))];
+  const balance = await fetchRealHiggsfieldBalance(session.higgsfield);
+  if (!balance) throw takeFailure('Não foi possível confirmar o saldo do Higgsfield. Atualize a conexão e tente novamente.', 502);
+  session.higgsfield.credits = balance.credits;
+  session.higgsfield.available = balance.credits;
+  setSessionCookie(res, session);
+  const expectedCost = Math.ceil(duration) * (modelId === 'hf-genjutsu-720p' ? 7 : 20);
+  if (balance.credits < expectedCost) throw takeFailure(`Créditos insuficientes no Higgsfield: são necessários ${expectedCost}.`, 409);
   const jobs = readJson(JOBS_FILE, []);
   const submittedAt = new Date().toISOString();
   const job = {
@@ -1442,7 +1445,7 @@ async function createTakeJob(req, { characterIds, clipIds, prompt, swapModels })
     title: `${character.name} · ${clip.name}`, kind: 'take', status: 'running',
     stage: 'submitting', billing: 'own', createdAt: submittedAt,
     input: { characterId: character.id, clipId: clip.id, swapModel: modelId, prompt: prompt || '' },
-    price_credits: Math.ceil(duration) * (modelId === 'hf-genjutsu-720p' ? 7 : 11),
+    price_credits: expectedCost,
     outputs: { thumbUrl: clip.thumbUrl },
     steps: [{ key: 'swap', status: 'running', parts: [{ status: 'running', submittedAt }] }]
   };
@@ -1450,12 +1453,15 @@ async function createTakeJob(req, { characterIds, clipIds, prompt, swapModels })
   writeJson(JOBS_FILE, jobs);
   await requestStore.getStore()?.lastWrite;
   try {
-    const result = await higgsfieldApi.submit(credential, {
-      prompt: prompt || `Replace the actor with ${character.name}, photorealistic, preserve natural motion`,
-      video_url: videoUrl, image_urls: imageUrls,
-      resolution: modelId === 'hf-genjutsu-720p' ? '720p' : '1080p'
-    });
-    job.providerRequestId = result.request_id;
+    const previousToken = session.higgsfield.token;
+    const result = await higgsfieldCli.invoke(['generate', 'create', 'hf_mult_motion_control',
+      '--prompt', prompt || `Replace the actor with ${character.name}, photorealistic, preserve natural motion`,
+      '--resolution', modelId === 'hf-genjutsu-720p' ? '720p' : '1080p'], session, media);
+    const submitted = Array.isArray(result) ? result[0] : result;
+    const providerId = typeof submitted === 'string' ? submitted.trim() : submitted?.id || submitted?.job_id;
+    if (!providerId || !/^[a-f0-9-]{36}$/i.test(providerId)) throw new Error('O Higgsfield não retornou o identificador do vídeo.');
+    if (session.higgsfield.token !== previousToken) setSessionCookie(res, session);
+    job.providerRequestId = providerId;
     job.stage = 'generating';
     job.providerStatus = result.status || 'queued';
     writeJson(JOBS_FILE, jobs);
@@ -1471,18 +1477,20 @@ async function createTakeJob(req, { characterIds, clipIds, prompt, swapModels })
   }
 }
 
-async function refreshTakeJob(req, job) {
+async function refreshTakeJob(req, res, job) {
   if (job.kind !== 'take' || job.status !== 'running' || !job.providerRequestId) return job;
-  const credential = takeCredential(getSession(req));
-  if (!credential) throw takeFailure('Configure a chave Higgsfield desta conta para acompanhar o vídeo.', 409);
-  const result = await higgsfieldApi.status(credential, job.providerRequestId);
+  const session = getSession(req);
+  if (!session?.higgsfield?.token || !session.higgsfield.refreshToken) throw takeFailure('Conecte novamente sua conta Higgsfield para acompanhar o vídeo.', 401);
+  const previousToken = session.higgsfield.token;
+  const result = await higgsfieldCli.invoke(['generate', 'get', job.providerRequestId], session);
+  if (session.higgsfield.token !== previousToken) setSessionCookie(res, session);
   const status = String(result.status || '').toLowerCase();
   const jobs = readJson(JOBS_FILE, []);
   const current = jobs.find(item => item.id === job.id);
   if (!current || current.status !== 'running') return current || job;
   current.providerStatus = status;
   if (status === 'completed') {
-    const videoUrl = result.video?.url || result.output?.video?.url || result.output?.video_url || result.result?.video?.url || result.video_url;
+    const videoUrl = result.result_url || result.video?.url || result.output?.video?.url || result.output?.video_url || result.result?.video?.url || result.video_url;
     if (!videoUrl || !/^https:\/\//i.test(videoUrl)) {
       current.status = 'failed'; current.stage = 'failed';
       current.error = 'O Higgsfield concluiu o pedido, mas não retornou um vídeo válido.';
@@ -1491,6 +1499,13 @@ async function refreshTakeJob(req, job) {
       current.finishedAt = new Date().toISOString();
       current.outputs = { ...current.outputs, masterUrl: videoUrl };
       current.steps = [{ key: 'swap', status: 'done', parts: [{ status: 'done' }] }];
+      const balance = await fetchRealHiggsfieldBalance(session.higgsfield);
+      if (balance) {
+        session.higgsfield.credits = balance.credits;
+        session.higgsfield.available = balance.credits;
+        session.higgsfield.checkedAt = new Date().toISOString();
+        setSessionCookie(res, session);
+      }
     }
   } else if (['failed', 'nsfw', 'canceled'].includes(status)) {
     current.status = status === 'canceled' ? 'canceled' : 'failed';
@@ -1505,7 +1520,7 @@ async function refreshTakeJob(req, job) {
 
 app.post('/api/takes', async (req, res) => {
   try {
-    const job = await createTakeJob(req, req.body || {});
+    const job = await createTakeJob(req, res, req.body || {});
     res.json({ jobs: [job] });
   } catch (error) {
     res.status(error.status || 502).json({ error: error.message });
@@ -1669,6 +1684,7 @@ async function fetchRealHiggsfieldBalance(cfg) {
         if (refRes.data?.access_token) {
           cfg.token = refRes.data.access_token;
           if (refRes.data.refresh_token) cfg.refreshToken = refRes.data.refresh_token;
+          cfg.expiresAt = Math.floor(Date.now() / 1000) + Number(refRes.data.expires_in || 300);
           const retryRes = await queryGw(cfg.token);
           if (retryRes) return retryRes;
         }
@@ -1826,6 +1842,7 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
     checkedAt: new Date().toISOString(),
     token: accessToken,
     refreshToken: refreshToken,
+    expiresAt: Math.floor(Date.now() / 1000) + Number(tokenRes.data.expires_in || 300),
     workspaceId: workspaceId
   };
 
@@ -1952,11 +1969,9 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
   try {
     const rawInput = String(url || token || '').trim();
 
-    // 1. Se passou token diretamente (oat_... ou ey...)
+    // A conexão de cada aluno deve passar pelo fluxo OAuth com state e PKCE.
     if (rawInput.startsWith('oat_') || rawInput.startsWith('ey') || (token && (token.startsWith('oat_') || token.startsWith('ey')))) {
-      const tok = (rawInput.startsWith('oat_') || rawInput.startsWith('ey')) ? rawInput : token;
-      const acc = await connectWithHiggsfieldToken(tok, req, res);
-      return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
+      return res.status(400).json({ error: 'Use a página de autorização do Higgsfield para conectar sua conta.' });
     }
 
     // 2. Extrai o código de autorização e state da URL
@@ -2024,26 +2039,17 @@ app.post('/api/higgsfield/refresh', async (req, res) => {
   }
 
   const hf = session.higgsfield;
-  const { credits, token } = req.body || {};
-
-  if (credits !== undefined && credits !== null && !isNaN(Number(credits))) {
-    hf.credits = Number(credits);
-    hf.available = Number(credits);
-    console.log(`[Higgsfield Saldo] Saldo ajustado para ${hf.credits} créditos`);
+  console.log(`[Higgsfield Saldo] Consultando saldo oficial para ${hf.email}...`);
+  const bal = await fetchRealHiggsfieldBalance(hf);
+  if (bal && bal.credits !== undefined) {
+    hf.credits = bal.credits;
+    hf.available = bal.credits;
+    if (bal.plan) hf.plan = bal.plan;
+    if (bal.workspaceId) hf.workspaceId = bal.workspaceId;
+    hf.status = 'active';
+    console.log(`[Higgsfield Saldo] Saldo oficial sincronizado: ${hf.credits} créditos (${hf.plan})`);
   } else {
-    if (token) hf.token = token;
-    console.log(`[Higgsfield Saldo] Consultando saldo oficial para ${hf.email}...`);
-    const bal = await fetchRealHiggsfieldBalance(hf);
-    if (bal && bal.credits !== undefined) {
-      hf.credits = bal.credits;
-      hf.available = bal.credits;
-      if (bal.plan) hf.plan = bal.plan;
-      if (bal.workspaceId) hf.workspaceId = bal.workspaceId;
-      hf.status = 'active';
-      console.log(`[Higgsfield Saldo] Saldo oficial sincronizado: ${hf.credits} créditos (${hf.plan})`);
-    } else {
-      console.warn('[Higgsfield Saldo] Não foi possível obter o saldo da API.');
-    }
+    return res.status(502).json({ error: 'Não foi possível consultar o saldo do Higgsfield.' });
   }
 
   hf.checkedAt = new Date().toISOString();

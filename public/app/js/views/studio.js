@@ -689,7 +689,6 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   const [hfErr, setHfErr] = useState(null)
   const hf = higgsfield()
   const own = hf?.mode === 'own'
-  const apiUnavailable = own && !hf?.apiCredentialsConfigured
   // créditos livres na conta própria: o orçamento do servidor já desconta a fila; sem ele, os livres do estado
   // (available) ou o saldo da conta. hfBalance: o saldo da conta (o número do chip da barra), para o texto dizer quanto
   // já está reservado para a fila
@@ -754,7 +753,7 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   }
 
   async function go() {
-    if (!count || busy || castBad || castShort || short || apiUnavailable) return
+    if (!count || busy || castBad || castShort || short) return
     setHfErr(null)
     if (hfBlock) return
     const missing = cfg.swapModels.map(modelById).filter(m => m && !m.configured)
@@ -820,13 +819,12 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
         ${pwOut ? html`<button class="btn btn--xs btn--primary" onClick=${() => openPaywall()}>Pagar ${pw.price_label}</button>` : null}
       </div>` : null}
       ${short && !own ? html`<div class="warnbox">Créditos insuficientes: ${count > 1 ? 'estes vídeos usam' : 'este vídeo usa'} ${credits(est.credits)} e você tem ${credits(S.wallet.balance_credits)}. <a href="#" onClick=${e => { e.preventDefault(); openWallet() }}>Comprar créditos</a></div>` : null}
-      ${apiUnavailable ? html`<div class="warnbox">Geração por vídeo indisponível: o login Higgsfield conecta a sua conta, mas não autoriza a API oficial Genjutsu. Nenhum pedido será cobrado.</div>` : null}
       <${HiggsfieldWarn} warn=${hfWarn || (short && own ? { kind: 'no_credits', text: noCreditsText(est.credits, hfHave, hfBalance) } : null)} />
     </div>
     <div class="panel__foot stack" style="gap:8px">
       <span class="small muted">${ready ? `${collab ? `collab de ${chars.length}` : plural(chars.length, 'personagem', 'personagens')} × ${plural(clips.length, 'vídeo', 'vídeos')}${cfg.swapModels.length > 1 ? ` × ${cfg.swapModels.length} modelos` : ''}` : 'Escolha o personagem (1) e o vídeo (2)'}</span>
       ${ready && est && est.credits ? html`<span class="small dim" title=${own ? 'Cada segundo cobrado usa os créditos da sua conta Higgsfield' : 'Cada segundo cobrado usa os créditos do Higgsfield Genjutsu, sem acréscimo'}>${[estimateText(est), own ? ownBudgetText(est.credits, hfHave, hfBalance) : credits(est.credits)].filter(Boolean).join(' · ')}</span>` : null}
-      <button class="gen-btn" disabled=${!ready || busy || short || apiUnavailable || !!hfBlock} onClick=${go}>
+      <button class="gen-btn" disabled=${!ready || busy || short || !!hfBlock} onClick=${go}>
         ${busy ? 'Enviando...' : count > 1 ? `Gerar ${count} vídeos` : 'Gerar'}
         ${est && est.credits ? html`<span class="gen-btn__cost" title=${own ? 'Créditos da sua conta Higgsfield que este pedido usa' : 'Créditos reservados ao gerar. Só são descontados quando o vídeo fica pronto; se ele for recusado ou der erro, voltam todos.'}>${cr(est.credits)}</span>` : null}
         <span class="kbd">⌘↵</span>

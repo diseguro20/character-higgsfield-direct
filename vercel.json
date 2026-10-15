@@ -1,7 +1,7 @@
 {
   "cleanUrls": false,
   "functions": {
-    "api/index.js": { "maxDuration": 300 }
+    "api/index.js": { "maxDuration": 300, "includeFiles": "node_modules/@higgsfield/cli/vendor/**" }
   },
   "rewrites": [
     {

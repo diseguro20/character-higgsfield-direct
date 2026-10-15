@@ -631,7 +631,7 @@ export function HiggsfieldPanel() {
         <div class="small dim">${higgsfieldStatusText(h)}</div>
         ${plan ? html`<div class="small dim hf-plan">Plano: ${plan}</div>` : null}</div>
       <div class="small muted">Créditos <b class="pixel">${h.credits == null ? '?' : num(h.credits)}</b>
-        <div class="small dim">Saldo da conta Higgsfield. A API Genjutsu tem autorização e faturamento separados.${h.checkedAt ? ` Saldo conferido ${ago(h.checkedAt)}.` : ''}</div></div>
+        <div class="small dim">O Genjutsu usa os créditos desta conta Higgsfield.${h.checkedAt ? ` Saldo conferido ${ago(h.checkedAt)}.` : ''}</div></div>
       <div class="row" style="gap:6px">
         ${h.status === 'auth_error' ? html`<button class="btn btn--sm btn--butter" disabled=${busy} onClick=${connect}>Conectar de novo</button>` : null}
         <button class="btn btn--sm" disabled=${busy || refresh.busy || refresh.done} onClick=${() => { setErr(null); refresh.run() }}>${refresh.done ? 'Saldo conferido agora' : 'Atualizar saldo'}</button>
