@@ -838,16 +838,9 @@ function getPkceSession(idOrState) {
 function createHiggsfieldLogin(req) {
   const verifier = base64Url(crypto.randomBytes(32));
   const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
-  const state = base64Url(crypto.randomBytes(32));
+  const state = 'hf_v1_' + verifier;
   const loginId = `login_${Date.now()}`;
-
-  const host = req?.headers?.['x-forwarded-host'] || req?.headers?.host || '';
-  let redirectUri = HIGGSFIELD_REDIRECT_URI;
-  if (host.includes('character-higgsfield-direct.vercel.app')) {
-    redirectUri = 'https://character-higgsfield-direct.vercel.app/api/auth/callback';
-  } else if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    redirectUri = 'http://localhost:3334/callback';
-  }
+  const redirectUri = 'http://localhost:3334/callback';
 
   const authorizeUrl = 'https://clerk.higgsfield.ai/oauth/authorize?' + new URLSearchParams({
     client_id: HIGGSFIELD_CLIENT_ID,
@@ -871,7 +864,6 @@ function createHiggsfieldLogin(req) {
 
   savePkceSession(loginObj);
   currentLogin = loginObj;
-  return loginObj;
 }
 
 async function fetchRealHiggsfieldBalance(cfg) {
@@ -1070,6 +1062,10 @@ app.post(['/api/higgsfield/connect', '/api/auth/higgsfield/connect'], (req, res)
 async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, state) {
   console.log(`[Higgsfield OAuth] Trocando code por access_token real no Clerk...`);
   
+  if (!verifier && state && state.startsWith('hf_v1_')) {
+    verifier = state.slice(6);
+    console.log('[Higgsfield OAuth] Verifier recuperado com sucesso via state!');
+  }
   if (!verifier && state) {
     const session = getPkceSession(state);
     if (session) {
@@ -1089,8 +1085,8 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
     redirectUri,
     'http://localhost:3334/callback',
     'http://127.0.0.1:3334/callback',
-    'https://character-higgsfield-direct.vercel.app/api/auth/callback',
-    'http://localhost:8765/callback'
+    'http://localhost:8765/callback',
+    'http://127.0.0.1:8765/callback'
   ].filter(Boolean);
 
   let tokenRes = null;
@@ -1251,11 +1247,15 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
     // 2. Extrai o código de autorização e state da URL
     let authCode = null;
     let authState = null;
+    let detectedRedirect = null;
     if (rawInput) {
       try {
         const parsed = new URL(rawInput.startsWith('http') ? rawInput : `http://${rawInput}`);
         authCode = parsed.searchParams.get('code');
         authState = parsed.searchParams.get('state');
+        if (parsed.pathname === '/callback') {
+          detectedRedirect = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+        }
       } catch (e) {
         const m = rawInput.match(/[?&]code=([a-zA-Z0-9_\-]+)/);
         if (m) authCode = m[1];
@@ -1266,8 +1266,12 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
 
     if (authCode) {
       const session = getPkceSession(authState) || loginSession;
-      const verifier = session?.verifier;
-      const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, session?.redirectUri || HIGGSFIELD_REDIRECT_URI, authState);
+      let verifier = session?.verifier;
+      if (!verifier && authState && authState.startsWith('hf_v1_')) {
+        verifier = authState.slice(6);
+      }
+      const redirectUri = detectedRedirect || session?.redirectUri || 'http://localhost:3334/callback';
+      const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, authState);
       return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
     }
 
