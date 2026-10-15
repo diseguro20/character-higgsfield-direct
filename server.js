@@ -32,6 +32,7 @@ const CLIPS_FILE = path.join(DATA_DIR, 'clips.json');
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
+const REFERENCE_IMAGES_FILE = path.join(DATA_DIR, 'reference_images.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -67,6 +68,7 @@ const DEFAULT_OWNER_CONFIG = {
 
 let memoryCache = {};
 const uploadedFilesBufferMap = new Map();
+const uploadedReferenceMap = new Map();
 
 function saveUploadedBuffer(name, buffer, mime) {
   uploadedFilesBufferMap.set(name, { buffer, mime });
@@ -771,11 +773,17 @@ app.post('/api/reference-images', (req, res) => {
 
     const url = base64 || `/uploads/${safeName}`;
     const refObj = {
-      id: `ref_${Date.now()}`,
+      id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       url: url,
       thumbUrl: url,
-      name: rawName
+      name: rawName,
+      createdAt: new Date().toISOString()
     };
+
+    uploadedReferenceMap.set(refObj.id, refObj);
+    const refList = readJson(REFERENCE_IMAGES_FILE, []);
+    refList.unshift(refObj);
+    writeJson(REFERENCE_IMAGES_FILE, refList);
 
     const session = getSession(req);
     if (session) {
@@ -790,6 +798,11 @@ app.post('/api/reference-images', (req, res) => {
 });
 
 app.delete('/api/reference-images/:id', (req, res) => {
+  const id = req.params.id;
+  uploadedReferenceMap.delete(id);
+  let refList = readJson(REFERENCE_IMAGES_FILE, []);
+  refList = refList.filter(r => r.id !== id);
+  writeJson(REFERENCE_IMAGES_FILE, refList);
   res.json({ ok: true });
 });
 
@@ -923,18 +936,55 @@ app.post('/api/images', async (req, res) => {
     const jobId = `job_img_${Date.now()}`;
     const generatedUrls = [];
 
-    if (Array.isArray(referenceIds) && referenceIds.length > 0 && session?.referenceImages) {
+    // 1. Coleta referências anexadas pelo usuário (fotos reais enviadas)
+    const refList = readJson(REFERENCE_IMAGES_FILE, []);
+    if (Array.isArray(referenceIds) && referenceIds.length > 0) {
       referenceIds.forEach(refId => {
-        const found = session.referenceImages.find(r => r.id === refId);
-        if (found) generatedUrls.push(found.url);
+        const found = uploadedReferenceMap.get(refId) || refList.find(r => r.id === refId);
+        if (found && found.url) {
+          generatedUrls.push(found.url);
+        }
       });
     }
 
-    const characters = readJson(CHARACTERS_FILE, []);
-    while (generatedUrls.length < n) {
-      const fallbackChar = characters[generatedUrls.length % characters.length];
-      const fallbackUrl = fallbackChar?.images?.[0]?.url || '/landing/assets/vector-1.webp';
-      generatedUrls.push(fallbackUrl);
+    // 2. Se nenhuma foto em referenceIds foi enviada, verifica refs do personagem (sem style anchors fictícios)
+    if (generatedUrls.length === 0 && Array.isArray(refs) && refs.length > 0) {
+      refs.forEach(r => {
+        if (r.url && !r.url.includes('vector-') && !r.url.includes('card-') && !generatedUrls.includes(r.url)) {
+          generatedUrls.push(r.url);
+        }
+      });
+    }
+
+    // 3. Se referências de fotos foram enviadas, usamos as fotos do usuário para compor as opções
+    if (generatedUrls.length > 0) {
+      const userRefPool = [...generatedUrls];
+      while (generatedUrls.length < n) {
+        generatedUrls.push(userRefPool[generatedUrls.length % userRefPool.length]);
+      }
+    } else {
+      // 4. Se NENHUMA foto foi anexada, geramos fotos realistas reais com IA a partir da descrição (prompt)
+      const cleanPrompt = (prompt || 'photorealistic studio portrait of a character, high resolution, 8k')
+        .replace(/Reference image 1 is ONLY the style anchor[^.]*\./gi, '')
+        .trim();
+
+      for (let i = 0; i < n; i++) {
+        try {
+          const seed = Math.floor(Math.random() * 10000000);
+          const aiUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt + ', photorealistic, master studio lighting, 8k quality, neutral background')}?seed=${seed}&width=768&height=1024&model=flux&nologo=true`;
+
+          const response = await axios.get(aiUrl, { responseType: 'arraybuffer', timeout: 12000 });
+          const imgBuf = Buffer.from(response.data);
+          const safeName = `gen_${Date.now()}_${i}.jpg`;
+          saveUploadedBuffer(safeName, imgBuf, 'image/jpeg');
+          const base64Uri = `data:image/jpeg;base64,${imgBuf.toString('base64')}`;
+          generatedUrls.push(base64Uri);
+        } catch (err) {
+          console.warn(`[AI Gen] Falha ao baixar imagem gerada por IA:`, err.message);
+          const seed = Math.floor(Math.random() * 10000000);
+          generatedUrls.push(`https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?seed=${seed}&width=768&height=1024&model=flux&nologo=true`);
+        }
+      }
     }
 
     const job = {
@@ -981,7 +1031,8 @@ app.post('/api/images/save', (req, res) => {
     writeJson(JOBS_FILE, jobs);
     broadcastEvent('job', job);
 
-    const imgUrl = job.outputs?.imageUrls?.[index] || '/landing/assets/vector-1.webp';
+    const imgUrl = job.outputs?.imageUrls?.[index] || job.outputs?.imageUrls?.[0];
+    if (!imgUrl) return res.status(400).json({ error: 'Nenhuma imagem encontrada neste pedido' });
     const characters = readJson(CHARACTERS_FILE, []);
     let char = characterId ? characters.find(c => c.id === characterId) : null;
 
@@ -2111,7 +2162,8 @@ app.post('/api/characters/:id/views', (req, res) => {
   const char = characters.find(c => c.id === charId);
   if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
 
-  const baseImg = char.images[0] || { url: '/landing/assets/vector-1.webp' };
+  const baseImg = char.images[0] || (char.cover ? char.images.find(i => i.id === char.cover) : null);
+  if (!baseImg) return res.status(400).json({ error: 'O personagem precisa de pelo menos uma imagem.' });
   const viewRoles = [
     { role: 'front', label: 'Frente' },
     { role: 'profile', label: 'Perfil' },
