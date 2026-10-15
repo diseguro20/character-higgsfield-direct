@@ -1,5 +1,6 @@
 {
   "cleanUrls": false,
+  "buildCommand": "node node_modules/@higgsfield/cli/install.js",
   "functions": {
     "api/index.js": { "maxDuration": 300, "includeFiles": "node_modules/@higgsfield/cli/vendor/**" }
   },

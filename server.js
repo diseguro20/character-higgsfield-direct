@@ -1702,6 +1702,24 @@ app.get('/api/higgsfield', (req, res) => {
   res.json({ ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) });
 });
 
+app.get('/api/higgsfield/cli-status', async (req, res) => {
+  const session = getSession(req);
+  if (!session?.higgsfield?.connected) return res.status(401).json({ error: 'Conecte sua conta Higgsfield.' });
+  try {
+    const account = await higgsfieldCli.invoke(['account', 'status'], session);
+    if (account.email?.toLowerCase() !== session.higgsfield.email?.toLowerCase()) {
+      return res.status(403).json({ error: 'A conta Higgsfield não corresponde à sessão.' });
+    }
+    session.higgsfield.credits = Number(account.credits);
+    session.higgsfield.available = Number(account.credits);
+    session.higgsfield.checkedAt = new Date().toISOString();
+    setSessionCookie(res, session);
+    res.json({ ready: true, email: account.email, credits: account.credits });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
 app.post('/api/higgsfield/api-credentials', (req, res) => {
   res.status(410).json({ error: 'O aplicativo está configurado para entrada somente via OAuth.' });
 });
