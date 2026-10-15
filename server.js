@@ -772,7 +772,7 @@ app.post('/api/takes', async (req, res) => {
 
 // 9. CONEXÃO HIGGSFIELD VIA OAUTH 2.0 PKCE REAL (CLERK HIGGSFIELD)
 const HIGGSFIELD_CLIENT_ID = 'sRGCQJvvJkPrrtRj';
-const HIGGSFIELD_REDIRECT_URI = 'http://127.0.0.1:3334/callback';
+const HIGGSFIELD_REDIRECT_URI = 'http://localhost:8765/callback';
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const crypto = require('crypto');
 
@@ -840,7 +840,7 @@ function createHiggsfieldLogin(req) {
   const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
   const state = 'hf_v1_' + verifier;
   const loginId = `login_${Date.now()}`;
-  const redirectUri = 'http://localhost:3334/callback';
+  const redirectUri = 'http://localhost:8765/callback';
 
   const authorizeUrl = 'https://clerk.higgsfield.ai/oauth/authorize?' + new URLSearchParams({
     client_id: HIGGSFIELD_CLIENT_ID,
@@ -848,7 +848,7 @@ function createHiggsfieldLogin(req) {
     code_challenge_method: 'S256',
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'openid email profile offline_access user:org:read',
+    scope: 'email profile offline_access user:org:read',
     state: state
   }).toString();
 
@@ -864,6 +864,7 @@ function createHiggsfieldLogin(req) {
 
   savePkceSession(loginObj);
   currentLogin = loginObj;
+  return loginObj;
 }
 
 async function fetchRealHiggsfieldBalance(cfg) {
@@ -1083,10 +1084,10 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
 
   const redirectCandidates = [
     redirectUri,
-    'http://localhost:3334/callback',
-    'http://127.0.0.1:3334/callback',
     'http://localhost:8765/callback',
-    'http://127.0.0.1:8765/callback'
+    'http://127.0.0.1:8765/callback',
+    'http://localhost:3334/callback',
+    'http://127.0.0.1:3334/callback'
   ].filter(Boolean);
 
   let tokenRes = null;
@@ -1270,7 +1271,7 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
       if (!verifier && authState && authState.startsWith('hf_v1_')) {
         verifier = authState.slice(6);
       }
-      const redirectUri = detectedRedirect || session?.redirectUri || 'http://localhost:3334/callback';
+      const redirectUri = detectedRedirect || session?.redirectUri || 'http://localhost:8765/callback';
       const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, authState);
       return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
     }
@@ -1573,17 +1574,17 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// Servidor OAuth Callback para Higgsfield (Porta 3334)
+// Servidor OAuth Callback para Higgsfield (Portas 8765 e 3334)
 const http = require('http');
 
-function startHiggsfieldCallbackServer(port = 3334) {
+function startHiggsfieldCallbackServer(port = 8765) {
   const callbackServer = http.createServer(async (req, res) => {
     try {
       const reqUrl = new URL(req.url, `http://localhost:${port}`);
       if (reqUrl.pathname === '/callback') {
         const authCode = reqUrl.searchParams.get('code');
         const state = reqUrl.searchParams.get('state');
-        console.log(`[OAuth Listener 3334] Callback recebido via navegador! code: ${authCode ? 'PRESENTE' : 'AUSENTE'}`);
+        console.log(`[OAuth Listener ${port}] Callback recebido via navegador! code: ${authCode ? 'PRESENTE' : 'AUSENTE'}`);
 
         if (!authCode) {
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -1591,10 +1592,13 @@ function startHiggsfieldCallbackServer(port = 3334) {
         }
 
         const session = getPkceSession(state) || currentLogin;
-        const verifier = session?.verifier;
+        let verifier = session?.verifier;
+        if (!verifier && state && state.startsWith('hf_v1_')) {
+          verifier = state.slice(6);
+        }
 
         try {
-          const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, session?.redirectUri || 'http://localhost:3334/callback', state);
+          const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, session?.redirectUri || `http://localhost:${port}/callback`, state);
 
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           return res.end(`
@@ -1627,7 +1631,7 @@ function startHiggsfieldCallbackServer(port = 3334) {
             </html>
           `);
         } catch (authErr) {
-          console.error('[OAuth Listener 3334] Erro na troca:', authErr.message);
+          console.error(`[OAuth Listener ${port}] Erro na troca:`, authErr.message);
           res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
           return res.end(`<h2>Erro na conexão com Higgsfield</h2><p>${authErr.message}</p>`);
         }
@@ -1648,7 +1652,7 @@ function startHiggsfieldCallbackServer(port = 3334) {
     if (err.code === 'EADDRINUSE') {
       console.warn(`Porta ${port} já em uso para OAuth callback.`);
     } else {
-      console.error('Erro no listener OAuth 3334:', err);
+      console.error(`Erro no listener OAuth ${port}:`, err);
     }
   });
 }
@@ -1673,7 +1677,8 @@ function startServer(port) {
     }
   });
 
-  // Inicia listener OAuth dedicado na porta 3334
+  // Inicia listeners OAuth dedicados nas portas 8765 e 3334
+  startHiggsfieldCallbackServer(8765);
   startHiggsfieldCallbackServer(3334);
 }
 
