@@ -26,9 +26,15 @@ async function invoke(args, session, media = []) {
       await item.write(filename);
       localArgs.push(item.flag, filename);
     }
+    const childEnv = { ...process.env };
+    for (const name of Object.keys(childEnv)) {
+      if (/^(HIGGSFIELD_|FIREBASE_|BLOB_|OWNER_|SESSION_|AWS_)/.test(name)) delete childEnv[name];
+    }
+    childEnv.HIGGSFIELD_CREDENTIALS_PATH = credentialsPath;
+    childEnv.HIGGSFIELD_CONFIG_PATH = configPath;
     const output = await new Promise((resolve, reject) => {
       const child = spawn(binary, [...args, ...localArgs, '--json'], {
-        env: { ...process.env, HIGGSFIELD_CREDENTIALS_PATH: credentialsPath, HIGGSFIELD_CONFIG_PATH: configPath },
+        env: childEnv,
         windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
       });
       let stdout = '';
@@ -38,7 +44,7 @@ async function invoke(args, session, media = []) {
       child.stderr.on('data', chunk => { stderr += chunk; if (stderr.length > max) child.kill(); });
       child.on('error', reject);
       child.on('close', code => {
-        if (code !== 0) return reject(new Error(stderr.replace(/Bearer\s+\S+|oat_[A-Za-z0-9._-]+/gi, '[credencial]').slice(0, 500) || `Higgsfield CLI: código ${code}`));
+        if (code !== 0) return reject(new Error(stderr.replace(/Bearer\s+\S+|oat_[A-Za-z0-9._-]+|\beyJ[A-Za-z0-9_-]{40,}(?:\.[A-Za-z0-9_-]+){1,2}/gi, '[credencial]').slice(0, 500) || `Higgsfield CLI: código ${code}`));
         try { resolve(JSON.parse(stdout)); }
         catch { reject(new Error('Resposta inválida do Higgsfield.')); }
       });

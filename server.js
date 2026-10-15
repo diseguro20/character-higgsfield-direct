@@ -443,8 +443,6 @@ function getHiggsfieldAccount(req) {
     checkedAt: null,
     cookie: '',
     token: '',
-    apiKey: '',
-    apiSecret: '',
     login: null
   };
 }
@@ -503,7 +501,7 @@ app.get('/api/state', (req, res) => {
         email_login: false,
         user_photo_characters: true
       },
-      higgsfield: { ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) },
+      higgsfield: { ...hf, apiCredentialsConfigured: false },
       paywall: {
         locked: false,
         free_videos: 99999,
@@ -652,7 +650,7 @@ app.get('/api/me', (req, res) => {
       email_login: false,
       user_photo_characters: true
     },
-    higgsfield: { ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) },
+    higgsfield: { ...hf, apiCredentialsConfigured: false },
     paywall: { locked: false, free_videos: 99999, free_left: 99999, price_label: 'Grátis' }
   });
 });
@@ -1701,7 +1699,7 @@ async function fetchRealHiggsfieldBalance(cfg) {
 
 app.get('/api/higgsfield', (req, res) => {
   const hf = getHiggsfieldAccount(req);
-  res.json({ ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) });
+  res.json({ ...hf, apiCredentialsConfigured: false });
 });
 
 app.get('/api/higgsfield/cli-status', async (req, res) => {
