@@ -93,9 +93,27 @@ export function dropJob(id) {
 
 let lastError = false
 let es = null
+let takePoll = null
+let pollingTakes = false
+async function pollRunningTakes() {
+  if (pollingTakes || S.auth !== 'ok') return
+  const active = S.jobs.filter(job => job.kind === 'take' && job.status === 'running' && job.providerRequestId)
+  if (!active.length) return
+  pollingTakes = true
+  try {
+    for (const job of active) {
+      try {
+        const updated = await api.get(`/api/jobs/${encodeURIComponent(job.id)}/status`)
+        apply({ type: 'job', item: updated })
+      } catch {}
+    }
+    notify()
+  } finally { pollingTakes = false }
+}
 export function connect() {
   if (es) return
   es = new EventSource('/api/events')
+  if (!takePoll) takePoll = setInterval(pollRunningTakes, 8000)
   es.onopen = () => { if (lastError) { lastError = false; load() } }
   es.onerror = () => { lastError = true }
   es.onmessage = e => {
@@ -137,6 +155,8 @@ function apply({ type, item }) {
 export function signedOut(message = null, data = null) {
   es?.close()
   es = null
+  if (takePoll) clearInterval(takePoll)
+  takePoll = null
   lastError = false
   const emailLogin = data ? emailLoginOn(data) : S.me ? emailLoginOn({ features: S.me.features }) : S.emailLogin
   Object.assign(S, {

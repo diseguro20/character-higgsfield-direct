@@ -1,0 +1,7 @@
+.edge-layout/
+.env*
+.git/
+.vercel/
+uploads/
+hf.exe
+tests/

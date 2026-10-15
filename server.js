@@ -3,28 +3,48 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const { HiggsfieldClient } = require('@higgsfield/client');
+const higgsfieldApi = require('./higgsfieldApi');
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 const DEFAULT_PORT = process.env.PORT || 3333;
-const SESSION_SECRET = process.env.SESSION_SECRET || 'character-higgsfield-isolated-sessions-2026';
+const SESSION_SECRET = process.env.SESSION_SECRET || (!process.env.VERCEL ? crypto.randomBytes(32).toString('hex') : '');
+if (!SESSION_SECRET) throw new Error('SESSION_SECRET deve ser configurado na Vercel');
 
 app.use(cors());
 app.use(express.json());
 // Para uploads brutos de vídeos/imagens da interface original
 app.use(express.raw({ type: ['application/octet-stream', 'video/*', 'image/*'], limit: '350mb' }));
+// Credenciais nunca fazem parte das respostas JSON enviadas ao navegador.
+const requestStore = new AsyncLocalStorage();
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = value => {
+    const safe = JSON.parse(JSON.stringify(value, (key, item) =>
+      ['token', 'refreshToken', 'apiKey', 'apiSecret', 'apiCredential', 'verifier', 'cookie'].includes(key) ? undefined : item));
+    const pending = requestStore.getStore()?.pending || [];
+    if (!pending.length) return originalJson(safe);
+    Promise.all(pending).then(() => originalJson(safe)).catch(err => {
+      console.error('Falha ao persistir no Firebase:', err);
+      res.status(503);
+      originalJson({ error: 'Não foi possível salvar no Firebase.' });
+    });
+    return res;
+  };
+  next();
+});
 
 // Diretórios
 const SITE_DIR = fs.existsSync(path.join(__dirname, 'public')) ? path.join(__dirname, 'public') : path.join(__dirname, 'site-original');
 const REPO_DATA_DIR = path.join(__dirname, 'data');
-const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : REPO_DATA_DIR;
-const UPLOADS_DIR = process.env.VERCEL ? path.join('/tmp', 'uploads') : path.join(__dirname, 'uploads');
+const DATA_DIR = process.env.CHARACTER_DATA_DIR || (process.env.VERCEL ? path.join('/tmp', 'data') : REPO_DATA_DIR);
+const UPLOADS_DIR = process.env.CHARACTER_UPLOADS_DIR || (process.env.VERCEL ? path.join('/tmp', 'uploads') : path.join(__dirname, 'uploads'));
 
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const CHARACTERS_FILE = path.join(DATA_DIR, 'characters.json');
@@ -39,31 +59,46 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // Firebase Backend Integration (Projeto: autocontentai-f20d8)
 let firebaseAdmin = null;
+let firestore = null;
+let storageBucket = null;
 try {
-  const admin = require('firebase-admin');
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      projectId: 'autocontentai-f20d8'
-    });
+  const admin = require('firebase-admin/app');
+  if (!admin.getApps().length) {
+    const credential = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+      ? admin.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON))
+      : admin.applicationDefault();
+    admin.initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'autocontentai-f20d8',
+      credential, storageBucket: process.env.FIREBASE_STORAGE_BUCKET });
   }
   firebaseAdmin = admin;
-  console.log('🔥 [Firebase Backend] Conectado ao projeto autocontentai-f20d8');
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_STORAGE_BUCKET) {
+    firestore = require('firebase-admin/firestore').getFirestore();
+  }
+  if (process.env.BLOB_READ_WRITE_TOKEN && firestore) {
+    storageBucket = require('./blobStorage').createBlobStorage(firestore);
+  } else if (process.env.FIREBASE_STORAGE_BUCKET && firestore) {
+    storageBucket = require('firebase-admin/storage').getStorage().bucket();
+  }
+  console.log(storageBucket ? '[Backend] Firestore e armazenamento persistente configurados' : '[Backend] SDK inicializado; usando persistência local');
 } catch (e) {
   console.log('[Firebase Backend] Aviso de inicialização:', e.message);
+}
+if (process.env.VERCEL && (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON || !firestore || !storageBucket)) {
+  throw new Error('Configure FIREBASE_SERVICE_ACCOUNT_JSON e BLOB_READ_WRITE_TOKEN na Vercel');
 }
 
 // Configuração padrão do Dono (sirilisworks3@gmail.com) - isolada
 const DEFAULT_OWNER_CONFIG = {
-  connected: true,
-  status: "active",
+  connected: false,
+  status: "idle",
   email: "sirilisworks3@gmail.com",
-  userId: "user_3KOFf1GutHdSGplLiBGJVX0XZk1",
-  token: "oat_OYQRHSNWH29GPJMR2HXDZY508KQ67ZYE",
-  refreshToken: "N2M5MTE3NDUTODBLYI01MMUYLWFIOTETOTHKODQ0ZJNINGEW",
-  workspaceId: "54e977f6-fece-4649-8e44-b86cf8e406e4",
-  credits: 560,
-  plan: "plus",
-  checkedAt: "2026-10-15T03:09:48.505Z"
+  userId: "owner",
+  token: process.env.HIGGSFIELD_OWNER_TOKEN || '',
+  refreshToken: process.env.HIGGSFIELD_OWNER_REFRESH_TOKEN || '',
+  workspaceId: process.env.HIGGSFIELD_OWNER_WORKSPACE_ID || '',
+  credits: 0,
+  plan: "",
+  checkedAt: null
 };
 
 let memoryCache = {};
@@ -72,6 +107,15 @@ const uploadedReferenceMap = new Map();
 
 function saveUploadedBuffer(name, buffer, mime) {
   uploadedFilesBufferMap.set(name, { buffer, mime });
+  if (storageBucket) {
+    const scope = requestStore.getStore();
+    const userId = scope?.req ? getSession(scope.req)?.user?.id : null;
+    const promise = storageBucket.file(`uploads/${name}`).save(buffer, { contentType: mime, resumable: false,
+      metadata: { metadata: { userId: userId || '' } } });
+    if (scope) scope.pending.push(promise);
+    else promise.catch(error => console.error('Upload Firebase:', error));
+    return;
+  }
   const filePath = path.join(UPLOADS_DIR, name);
   try {
     fs.writeFileSync(filePath, buffer);
@@ -82,6 +126,15 @@ function saveUploadedBuffer(name, buffer, mime) {
 
 function readJson(file, fallback = []) {
   const baseName = path.basename(file);
+  const scoped = requestStore.getStore()?.documents;
+  if (scoped?.has(baseName)) {
+    const value = scoped.get(baseName);
+    if (baseName !== 'config.json') return value;
+    return { ...DEFAULT_OWNER_CONFIG, ...value,
+      token: value.token || process.env.HIGGSFIELD_OWNER_TOKEN || '',
+      refreshToken: value.refreshToken || process.env.HIGGSFIELD_OWNER_REFRESH_TOKEN || '',
+      workspaceId: value.workspaceId || process.env.HIGGSFIELD_OWNER_WORKSPACE_ID || '' };
+  }
   if (baseName === 'config.json') {
     if (memoryCache[baseName]) {
       return memoryCache[baseName];
@@ -102,6 +155,12 @@ function readJson(file, fallback = []) {
       }
     } catch {}
     const finalConfig = { ...DEFAULT_OWNER_CONFIG, ...(data || {}) };
+    if (process.env.VERCEL) {
+      finalConfig.token = process.env.HIGGSFIELD_OWNER_TOKEN || '';
+      finalConfig.refreshToken = process.env.HIGGSFIELD_OWNER_REFRESH_TOKEN || '';
+      finalConfig.workspaceId = process.env.HIGGSFIELD_OWNER_WORKSPACE_ID || '';
+    }
+    finalConfig.connected = !!finalConfig.token;
     memoryCache[baseName] = finalConfig;
     return finalConfig;
   }
@@ -128,6 +187,36 @@ function readJson(file, fallback = []) {
 function writeJson(file, data) {
   try {
     const baseName = path.basename(file);
+    const scope = requestStore.getStore();
+    if (firestore && scope) {
+      const previous = scope.beforeWrite.get(baseName);
+      const snapshot = JSON.parse(JSON.stringify(data));
+      const before = JSON.parse(JSON.stringify(previous));
+      scope.documents.set(baseName, data);
+      scope.beforeWrite.set(baseName, snapshot);
+      const doc = firestore.collection('character_school_data').doc(baseName.replace('.json', ''));
+      scope.lastWrite = (scope.lastWrite || Promise.resolve()).then(() => firestore.runTransaction(async tx => {
+        const stored = await tx.get(doc);
+        const current = stored.exists ? stored.data().value : (Array.isArray(snapshot) ? [] : {});
+        if (Array.isArray(snapshot) && Array.isArray(before) && Array.isArray(current)) {
+          const old = new Map(before.map(item => [item.id, item]));
+          const next = new Map(snapshot.map(item => [item.id, item]));
+          const merged = current.filter(item => !old.has(item.id) || next.has(item.id));
+          for (const item of snapshot) {
+            if (!old.has(item.id) || JSON.stringify(old.get(item.id)) !== JSON.stringify(item)) {
+              const index = merged.findIndex(existing => existing.id === item.id);
+              if (index < 0) merged.unshift(item);
+              else merged[index] = item;
+            }
+          }
+          tx.set(doc, { value: merged });
+        } else {
+          tx.set(doc, { value: snapshot });
+        }
+      }));
+      scope.pending.push(scope.lastWrite);
+      return;
+    }
     memoryCache[baseName] = data;
     const dir = path.dirname(file);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -136,6 +225,20 @@ function writeJson(file, data) {
     console.error(`Erro ao escrever ${file}:`, e.message);
   }
 }
+
+// Cada requisição lê seu próprio snapshot; gravações aguardam confirmação antes da resposta.
+app.use(async (req, res, next) => {
+  if (!firestore || (!req.path.startsWith('/api/') && !req.path.startsWith('/uploads/'))) return next();
+  try {
+    const names = ['characters.json', 'clips.json', 'jobs.json', 'projects.json', 'reference_images.json', 'config.json', 'sessions.json'];
+    const docs = await firestore.getAll(...names.map(name => firestore.collection('character_school_data').doc(name.replace('.json', ''))));
+    const documents = new Map(names.map((name, i) => [name, docs[i].exists ? docs[i].data().value : (name.endsWith('config.json') ? { ...DEFAULT_OWNER_CONFIG } : name.endsWith('sessions.json') ? {} : [])]));
+    requestStore.run({ documents, beforeWrite: new Map(Array.from(documents, ([name, value]) => [name, JSON.parse(JSON.stringify(value))])), pending: [], req }, next);
+  } catch (error) {
+    console.error('Firebase indisponível:', error);
+    res.status(503).json({ error: 'Firebase indisponível.' });
+  }
+});
 
 // -------------------------------------------------------------
 // GERENCIAMENTO DE SESSÕES MULTI-TENANT (ISOLAMENTO POR COOKIE)
@@ -159,7 +262,11 @@ function parseCookies(req) {
 }
 
 function signSession(data) {
-  const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
+  const key = crypto.createHash('sha256').update(SESSION_SECRET).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+  const payload = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
@@ -170,10 +277,13 @@ function verifySession(token) {
   if (parts.length !== 2) return null;
   const [payload, sig] = parts;
   const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  if (sig !== expectedSig) return null;
+  if (sig.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) return null;
   try {
-    const jsonStr = Buffer.from(payload, 'base64url').toString('utf8');
-    return JSON.parse(jsonStr);
+    const bytes = Buffer.from(payload, 'base64url');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', crypto.createHash('sha256').update(SESSION_SECRET).digest(), bytes.subarray(0, 12));
+    decipher.setAuthTag(bytes.subarray(12, 28));
+    const session = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8'));
+    return Date.now() - Date.parse(session.createdAt) < 30 * 86400000 ? session : null;
   } catch (e) {
     return null;
   }
@@ -184,7 +294,7 @@ const activeSessions = new Map();
 function getSession(req) {
   if (req.session) return req.session;
   const cookies = parseCookies(req);
-  const token = cookies['character_session'] || req.headers['x-character-session'];
+  const token = cookies['character_session'];
   if (!token) return null;
 
   if (activeSessions.has(token)) {
@@ -214,7 +324,7 @@ function createSession(userData, higgsfieldData) {
 function setSessionCookie(res, session) {
   const token = signSession(session);
   activeSessions.set(token, session);
-  res.setHeader('Set-Cookie', `character_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  res.setHeader('Set-Cookie', `character_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${process.env.VERCEL ? '; Secure' : ''}`);
   return token;
 }
 
@@ -222,72 +332,39 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', 'character_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
 }
 
-// Atalho para o dono: acessar ?owner=1 ou /api/auth/owner conecta a conta do dono diretamente
-app.use((req, res, next) => {
-  if (req.query.owner === '1' || req.query.admin === '1') {
-    const ownerConfig = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
-    const ownerSession = createSession(
-      {
-        id: ownerConfig.userId || 'user_owner',
-        email: ownerConfig.email || 'sirilisworks3@gmail.com',
-        name: ownerConfig.email ? ownerConfig.email.split('@')[0] : 'admin',
-        role: 'admin'
-      },
-      {
-        mode: 'own',
-        connected: true,
-        status: 'active',
-        credits: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
-        available: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
-        email: ownerConfig.email || 'sirilisworks3@gmail.com',
-        plan: ownerConfig.plan || 'plus',
-        checkedAt: ownerConfig.checkedAt || new Date().toISOString(),
-        token: ownerConfig.token,
-        refreshToken: ownerConfig.refreshToken,
-        workspaceId: ownerConfig.workspaceId
-      }
-    );
-    setSessionCookie(res, ownerSession);
-    req.session = ownerSession;
-    if (req.path === '/app' || req.path === '/app/') {
-      return res.redirect('/app');
-    }
+// Acesso direto do dono exige uma chave privada configurada no servidor.
+async function ownerLogin(req, res) {
+  const supplied = String(req.body?.key || req.headers['x-owner-access-key'] || '');
+  const expected = process.env.OWNER_ACCESS_KEY || '';
+  if (!expected || supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+    return res.status(403).json({ error: 'Acesso do dono indisponível.' });
   }
-  next();
-});
-
-app.get('/api/auth/owner', (req, res) => {
-  const ownerConfig = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
-  const ownerSession = createSession(
-    {
-      id: ownerConfig.userId || 'user_owner',
-      email: ownerConfig.email || 'sirilisworks3@gmail.com',
-      name: 'sirilisworks3',
-      role: 'admin'
-    },
-    {
-      mode: 'own',
-      connected: true,
-      status: 'active',
-      credits: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
-      available: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
-      email: ownerConfig.email || 'sirilisworks3@gmail.com',
-      plan: ownerConfig.plan || 'plus',
-      checkedAt: ownerConfig.checkedAt || new Date().toISOString(),
-      token: ownerConfig.token,
-      refreshToken: ownerConfig.refreshToken,
-      workspaceId: ownerConfig.workspaceId
-    }
+  const config = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
+  if (!config.token) return res.status(503).json({ error: 'Configure HIGGSFIELD_OWNER_TOKEN.' });
+  const previousToken = config.token;
+  const balance = process.env.CHARACTER_TEST_MODE ? { credits: 0 } : await fetchRealHiggsfieldBalance(config).catch(() => null);
+  if (config.token !== previousToken) writeJson(CONFIG_FILE, config);
+  const credits = balance?.credits ?? 0;
+  const session = createSession(
+    { id: config.userId || 'owner', email: config.email, name: 'sirilisworks3', role: 'admin' },
+    { mode: 'own', connected: true, status: 'active', credits,
+      available: credits, email: config.email, plan: balance?.plan || config.plan,
+      checkedAt: balance ? new Date().toISOString() : null, token: config.token, refreshToken: config.refreshToken,
+      workspaceId: config.workspaceId,
+      apiCredentialsConfigured: false }
   );
-  setSessionCookie(res, ownerSession);
-  res.redirect('/app');
-});
+  setSessionCookie(res, session);
+  return req.method === 'POST' ? res.json({ ok: true }) : res.redirect('/app');
+}
+app.get('/api/auth/owner', ownerLogin);
+app.post('/api/auth/owner', ownerLogin);
+app.get('/app', (req, res, next) => req.query.owner === '1' ? ownerLogin(req, res) : next());
 
 // Clientes SSE (Server-Sent Events)
 let sseClients = [];
 function broadcastEvent(type, item) {
   const payload = `data: ${JSON.stringify({ events: [{ type, item }] })}\n\n`;
-  sseClients.forEach(c => c.res.write(payload));
+  sseClients.filter(c => item?.userId && c.userId === item.userId).forEach(c => c.res.write(payload));
 }
 
 // -------------------------------------------------------------
@@ -295,11 +372,19 @@ function broadcastEvent(type, item) {
 // -------------------------------------------------------------
 app.use('/landing', express.static(path.join(SITE_DIR, 'landing')));
 app.use('/app', express.static(path.join(SITE_DIR, 'app')));
-app.use('/uploads', express.static(UPLOADS_DIR));
-app.use('/api/uploads', express.static(UPLOADS_DIR));
-
-app.get(['/uploads/:name', '/api/uploads/:name'], (req, res) => {
+app.get(['/uploads/:name', '/api/uploads/:name'], async (req, res) => {
+  const session = getSession(req);
+  if (!session?.higgsfield?.connected) return res.status(401).send('Não autorizado');
   const fileName = req.params.name;
+  if (storageBucket) {
+    try {
+      const file = storageBucket.file(`uploads/${fileName}`);
+      const [metadata] = await file.getMetadata();
+      if (metadata.metadata?.userId !== session.user.id) return res.status(403).send('Acesso negado');
+      const [url] = await file.getSignedUrl({ version: 'v4', action: 'read', expires: Date.now() + 60 * 60000 });
+      return res.redirect(302, url);
+    } catch { return res.status(404).send('Arquivo não encontrado'); }
+  }
   if (uploadedFilesBufferMap.has(fileName)) {
     const item = uploadedFilesBufferMap.get(fileName);
     res.setHeader('Content-Type', item.mime || 'application/octet-stream');
@@ -322,6 +407,17 @@ app.get(['/app', '/app/'], (req, res) => {
   res.sendFile(path.join(SITE_DIR, 'app', 'index.html'));
 });
 
+function owns(req, item) {
+  const user = getSession(req)?.user;
+  return !!user && (item?.userId === user.id || (!item?.userId && user.role === 'admin'));
+}
+app.use('/api', (req, res, next) => {
+  if (req.path === '/state' || req.path.startsWith('/auth/') || req.path.startsWith('/higgsfield')) return next();
+  if (!getSession(req)?.higgsfield?.connected) return res.status(401).json({ error: 'Conecte sua conta Higgsfield.' });
+  if (req.path.startsWith('/admin') && getSession(req).user?.role !== 'admin') return res.status(403).json({ error: 'Acesso restrito.' });
+  next();
+});
+
 // -------------------------------------------------------------
 // APIS DO APP ORIGINAL (MULTI-TENANT / CONEXÃO POR LEAD)
 // -------------------------------------------------------------
@@ -333,7 +429,7 @@ function getHiggsfieldAccount(req) {
   if (session && session.higgsfield && session.higgsfield.connected) {
     return {
       ...session.higgsfield,
-      ...(currentLogin && ['starting', 'waiting', 'completing'].includes(currentLogin?.status) ? { login: currentLogin } : {})
+      login: null
     };
   }
   return {
@@ -349,7 +445,7 @@ function getHiggsfieldAccount(req) {
     token: '',
     apiKey: '',
     apiSecret: '',
-    ...(currentLogin && ['starting', 'waiting', 'completing'].includes(currentLogin?.status) ? { login: currentLogin } : {})
+    login: null
   };
 }
 
@@ -378,9 +474,9 @@ app.get('/api/state', (req, res) => {
   const jobs = readJson(JOBS_FILE, []);
 
   // Filtra por usuário (se item tiver userId) ou exibe itens base
-  const userCharacters = characters.filter(c => !c.userId || c.userId === user.id);
-  const userClips = clips.filter(c => !c.userId || c.userId === user.id);
-  const userJobs = jobs.filter(j => !j.userId || j.userId === user.id);
+  const userCharacters = characters.filter(c => owns(req, c));
+  const userClips = clips.filter(c => owns(req, c));
+  const userJobs = jobs.filter(j => owns(req, j));
 
   const state = {
     auth: 'ok',
@@ -407,7 +503,7 @@ app.get('/api/state', (req, res) => {
         email_login: false,
         user_photo_characters: true
       },
-      higgsfield: hf,
+      higgsfield: { ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) },
       paywall: {
         locked: false,
         free_videos: 99999,
@@ -526,11 +622,11 @@ app.get('/api/state', (req, res) => {
       { id: 'hfcli', label: 'Higgsfield', configured: true }
     ],
     characters: userCharacters,
-    projects: readJson(PROJECTS_FILE, []),
+    projects: readJson(PROJECTS_FILE, []).filter(p => owns(req, p)),
     clips: userClips,
     jobs: userJobs,
     templates: {
-      card: 'Reference image 1 is ONLY the style anchor: match its soft studio light, solid butter-yellow background, three-quarter bust framing, camera angle and premium photographic finish. Never copy its identity, face, hair, moustache or clothes. {identity}',
+      card: 'Photorealistic portrait of {identity}',
       sheet: 'Character sheet of {name}, three views: front view, profile view, three-quarter view, neutral background, photorealistic. {identity}',
       fullbody: 'Full body shot of {name}, standing, studio lighting, photorealistic, head to toe visible. {identity}'
     },
@@ -556,7 +652,7 @@ app.get('/api/me', (req, res) => {
       email_login: false,
       user_photo_characters: true
     },
-    higgsfield: hf,
+    higgsfield: { ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) },
     paywall: { locked: false, free_videos: 99999, free_left: 99999, price_label: 'Grátis' }
   });
 });
@@ -568,7 +664,7 @@ app.get('/api/events', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
 
   const clientId = Date.now();
-  sseClients.push({ id: clientId, res });
+  sseClients.push({ id: clientId, res, userId: getSession(req).user.id });
 
   const timer = setInterval(() => {
     res.write(`data: ${JSON.stringify({ spend: { today: 0, month: 0, total: 0 } })}\n\n`);
@@ -585,11 +681,18 @@ app.post('/api/clips', async (req, res) => {
   try {
     const session = getSession(req);
     const userId = session?.user?.id || 'anonymous';
-    const rawName = req.query.name || `video_${Date.now()}.mp4`;
-    const safeName = `${Date.now()}_${path.basename(rawName)}`;
+    const direct = req.body?.uploadName ? await directUpload(req) : null;
+    if (direct && !direct.mime.startsWith('video/')) return res.status(415).json({ error: 'Envie um vídeo.' });
+    const rawName = req.body?.name || req.query.name || `video_${Date.now()}.mp4`;
+    const safeName = direct?.name || `${crypto.randomUUID()}_${path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
     const filePath = path.join(UPLOADS_DIR, safeName);
 
-    fs.writeFileSync(filePath, req.body);
+    if (direct) await direct.file.download({ destination: filePath });
+    else {
+      if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Vídeo vazio.' });
+      fs.writeFileSync(filePath, req.body);
+      saveUploadedBuffer(safeName, req.body, req.headers['content-type'] || 'video/mp4');
+    }
 
     const thumbName = `thumb_${Date.now()}.jpg`;
     const thumbPath = path.join(UPLOADS_DIR, thumbName);
@@ -605,6 +708,7 @@ app.post('/api/clips', async (req, res) => {
         .on('end', resolve)
         .on('error', () => resolve());
     });
+    if (fs.existsSync(thumbPath)) saveUploadedBuffer(thumbName, fs.readFileSync(thumbPath), 'image/jpeg');
 
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       const duration = metadata?.format?.duration || 10;
@@ -616,9 +720,9 @@ app.post('/api/clips', async (req, res) => {
         id: `clip_${Date.now()}`,
         userId,
         name: rawName,
-        url: `/uploads/${safeName}`,
+        url: `/api/uploads/${safeName}`,
         localPath: filePath,
-        thumbUrl: fs.existsSync(thumbPath) ? `/uploads/${thumbName}` : `/uploads/${safeName}`,
+        thumbUrl: fs.existsSync(thumbPath) ? `/api/uploads/${thumbName}` : `/api/uploads/${safeName}`,
         info: {
           duration: Math.round(duration * 10) / 10,
           width,
@@ -644,9 +748,11 @@ app.post('/api/clips', async (req, res) => {
 app.patch('/api/clips/:id', (req, res) => {
   const id = req.params.id;
   const clips = readJson(CLIPS_FILE, []);
-  const clip = clips.find(c => c.id === id);
+  const clip = clips.find(c => c.id === id && owns(req, c));
   if (clip) {
-    Object.assign(clip, req.body);
+    for (const field of ['name', 'trim']) {
+      if (req.body?.[field] !== undefined) clip[field] = req.body[field];
+    }
     writeJson(CLIPS_FILE, clips);
     broadcastEvent('clip', clip);
   }
@@ -656,9 +762,9 @@ app.patch('/api/clips/:id', (req, res) => {
 app.delete('/api/clips/:id', (req, res) => {
   const id = req.params.id;
   let clips = readJson(CLIPS_FILE, []);
-  clips = clips.filter(c => c.id !== id);
+  clips = clips.filter(c => c.id !== id || !owns(req, c));
   writeJson(CLIPS_FILE, clips);
-  broadcastEvent('clip:removed', { id });
+  broadcastEvent('clip:removed', { id, userId: getSession(req).user.id });
   res.json({ success: true });
 });
 
@@ -735,20 +841,55 @@ app.post('/api/downloads', (req, res) => {
 });
 
 // 6. UPLOADS E IMAGENS DE REFERÊNCIA
-app.post('/api/uploads', (req, res) => {
+app.post('/api/uploads/prepare', async (req, res) => {
+  if (!storageBucket || !firestore) return res.status(501).json({ error: 'Upload direto requer armazenamento persistente.' });
+  const { name, contentType, size } = req.body || {};
+  if (typeof name !== 'string' || typeof contentType !== 'string' || !/^(image|video)\//.test(contentType)
+    || !Number.isFinite(size) || size < 1 || size > 350 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Arquivo inválido ou maior que 350 MB.' });
+  }
+  const uploadName = `direct_${crypto.randomUUID()}_${path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  const file = storageBucket.file(`uploads/${uploadName}`);
   try {
+    const [uploadUrl] = await file.getSignedUrl({ version: 'v4', action: 'write', expires: Date.now() + 15 * 60000, contentType });
+    await firestore.collection('character_school_pending_uploads').doc(uploadName).set({
+      userId: getSession(req).user.id, contentType, size, createdAt: Date.now()
+    });
+    res.json({ uploadName, uploadUrl, contentType });
+  } catch (error) { res.status(503).json({ error: `Não foi possível preparar upload: ${error.message}` }); }
+});
+
+async function directUpload(req) {
+  const name = req.body?.uploadName;
+  if (!name || typeof name !== 'string' || !/^direct_[a-f0-9-]+_[a-zA-Z0-9._-]+$/.test(name) || !storageBucket) return null;
+  const pendingRef = firestore.collection('character_school_pending_uploads').doc(name);
+  const pending = await pendingRef.get();
+  const record = pending.data();
+  if (!record || record.userId !== getSession(req).user.id || Date.now() - record.createdAt > 20 * 60000) throw new Error('Upload não autorizado ou expirado.');
+  const file = storageBucket.file(`uploads/${name}`);
+  const [metadata] = await file.getMetadata();
+  if (Number(metadata.size) !== record.size || metadata.contentType !== record.contentType) throw new Error('Arquivo enviado não corresponde ao upload preparado.');
+  await file.setMetadata({ metadata: { userId: record.userId } });
+  await pendingRef.delete();
+  return { name, mime: record.contentType, file };
+}
+
+app.post('/api/uploads', async (req, res) => {
+  try {
+    const direct = req.body?.uploadName ? await directUpload(req) : null;
+    if (!direct && (!Buffer.isBuffer(req.body) || !req.body.length)) return res.status(400).json({ error: 'Arquivo vazio.' });
     const rawName = req.query.name || `upload_${Date.now()}.jpg`;
     const ext = path.extname(rawName).toLowerCase().replace('.', '') || 'jpeg';
-    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
-    const safeName = `up_${Date.now()}_${path.basename(rawName)}`;
+    const mime = direct?.mime || (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg');
+    const safeName = direct?.name || `up_${crypto.randomUUID()}_${path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 
     let base64 = null;
-    if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+    if (!direct && req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
       saveUploadedBuffer(safeName, req.body, mime);
       base64 = `data:${mime};base64,${req.body.toString('base64')}`;
     }
 
-    const url = base64 || `/uploads/${safeName}`;
+    const url = storageBucket ? `/api/uploads/${safeName}` : (base64 || `/uploads/${safeName}`);
     res.json({
       path: `/uploads/${safeName}`,
       url: url
@@ -758,22 +899,27 @@ app.post('/api/uploads', (req, res) => {
   }
 });
 
-app.post('/api/reference-images', (req, res) => {
+app.post('/api/reference-images', async (req, res) => {
   try {
-    const rawName = req.query.name || `ref_${Date.now()}.jpg`;
+    const direct = req.body?.uploadName ? await directUpload(req) : null;
+    if (!direct && (!Buffer.isBuffer(req.body) || !req.body.length)) return res.status(400).json({ error: 'Imagem vazia.' });
+    if (direct && !direct.mime.startsWith('image/')) return res.status(415).json({ error: 'Envie uma imagem.' });
+    if (!direct && !String(req.headers['content-type'] || '').match(/^(application\/octet-stream|image\/)/)) return res.status(415).json({ error: 'Envie uma imagem.' });
+    const rawName = req.body?.name || req.query.name || `ref_${Date.now()}.jpg`;
     const ext = path.extname(rawName).toLowerCase().replace('.', '') || 'jpeg';
-    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
-    const safeName = `ref_${Date.now()}_${path.basename(rawName)}`;
+    const mime = direct?.mime || (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg');
+    const safeName = direct?.name || `ref_${crypto.randomUUID()}_${path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 
     let base64 = null;
-    if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+    if (!direct && req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
       saveUploadedBuffer(safeName, req.body, mime);
       base64 = `data:${mime};base64,${req.body.toString('base64')}`;
     }
 
-    const url = base64 || `/uploads/${safeName}`;
+    const url = storageBucket ? `/api/uploads/${safeName}` : (base64 || `/uploads/${safeName}`);
     const refObj = {
       id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      userId: getSession(req).user.id,
       url: url,
       thumbUrl: url,
       name: rawName,
@@ -801,7 +947,7 @@ app.delete('/api/reference-images/:id', (req, res) => {
   const id = req.params.id;
   uploadedReferenceMap.delete(id);
   let refList = readJson(REFERENCE_IMAGES_FILE, []);
-  refList = refList.filter(r => r.id !== id);
+  refList = refList.filter(r => r.id !== id || !owns(req, r));
   writeJson(REFERENCE_IMAGES_FILE, refList);
   res.json({ ok: true });
 });
@@ -811,6 +957,12 @@ app.post('/api/characters', (req, res) => {
   const session = getSession(req);
   const userId = session?.user?.id || 'anonymous';
   const characters = readJson(CHARACTERS_FILE, []);
+  const initialImages = Array.isArray(req.body?.images) ? req.body.images.filter(i =>
+    i && typeof i.url === 'string' && (i.url.startsWith('data:image/') || i.url.startsWith('/api/uploads/'))
+    && !/\/(vector-|card-)/.test(i.url)).map(i => ({
+      id: i.id || `img_${crypto.randomUUID()}`, url: i.url, thumbUrl: i.thumbUrl || i.url,
+      role: i.role || 'card', label: i.label || 'Card', useAsRef: i.useAsRef !== false
+    })) : [];
   const newChar = {
     id: `char_${Date.now()}`,
     userId,
@@ -818,8 +970,8 @@ app.post('/api/characters', (req, res) => {
     code: `CS${String(characters.length + 1).padStart(3, '0')}`,
     identityEn: req.body?.identityEn || '',
     description: req.body?.description || '',
-    images: req.body?.images || [],
-    cover: req.body?.cover || null,
+    images: initialImages,
+    cover: initialImages.some(i => i.id === req.body?.cover) ? req.body.cover : (initialImages[0]?.id || null),
     favorite: false,
     library: false,
     createdAt: new Date().toISOString()
@@ -834,12 +986,15 @@ app.patch('/api/characters/:id', (req, res) => {
   const id = req.params.id;
   const characters = readJson(CHARACTERS_FILE, []);
   const char = characters.find(c => c.id === id);
-  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  if (!char || !owns(req, char)) return res.status(404).json({ error: 'Personagem não encontrado' });
 
   if (req.body.name !== undefined) char.name = req.body.name;
   if (req.body.identityEn !== undefined) char.identityEn = req.body.identityEn;
   if (req.body.description !== undefined) char.description = req.body.description;
-  if (req.body.cover !== undefined) char.cover = req.body.cover;
+  if (req.body.cover !== undefined) {
+    if (req.body.cover && !char.images.some(i => i.id === req.body.cover)) return res.status(400).json({ error: 'Capa inválida.' });
+    char.cover = req.body.cover;
+  }
   if (req.body.favorite !== undefined) char.favorite = req.body.favorite;
 
   writeJson(CHARACTERS_FILE, characters);
@@ -850,36 +1005,41 @@ app.patch('/api/characters/:id', (req, res) => {
 app.delete('/api/characters/:id', (req, res) => {
   const id = req.params.id;
   let characters = readJson(CHARACTERS_FILE, []);
-  characters = characters.filter(c => c.id !== id);
+  characters = characters.filter(c => c.id !== id || !owns(req, c));
   writeJson(CHARACTERS_FILE, characters);
-  broadcastEvent('character:removed', { id });
+  broadcastEvent('character:removed', { id, userId: getSession(req).user.id });
   res.json({ ok: true });
 });
 
 // Upload de fotos/imagens do personagem
-app.post('/api/characters/:id/images', (req, res) => {
+app.post('/api/characters/:id/images', async (req, res) => {
   const charId = req.params.id;
   const characters = readJson(CHARACTERS_FILE, []);
   const char = characters.find(c => c.id === charId);
-  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  if (!char || !owns(req, char)) return res.status(404).json({ error: 'Personagem não encontrado' });
+  let direct = null;
+  try { direct = req.body?.uploadName ? await directUpload(req) : null; }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+  if (!direct && (!Buffer.isBuffer(req.body) || !req.body.length)) return res.status(400).json({ error: 'Imagem vazia.' });
+  if (direct && !direct.mime.startsWith('image/')) return res.status(415).json({ error: 'Envie uma imagem.' });
 
-  const rawName = req.query.name || `photo_${Date.now()}.jpg`;
+  const rawName = req.body?.name || req.query.name || `photo_${Date.now()}.jpg`;
   const ext = path.extname(rawName).toLowerCase().replace('.', '') || 'jpeg';
-  const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
-  const safeName = `ref_${Date.now()}_${path.basename(rawName)}`;
+  const mime = direct?.mime || (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg');
+  const safeName = direct?.name || `ref_${crypto.randomUUID()}_${path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 
   let base64 = null;
-  if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+  if (!direct && req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
     saveUploadedBuffer(safeName, req.body, mime);
     base64 = `data:${mime};base64,${req.body.toString('base64')}`;
   }
 
-  const url = `/uploads/${safeName}`;
-  const thumbUrl = base64 || url;
+  const url = storageBucket ? `/api/uploads/${safeName}` : (base64 || `/uploads/${safeName}`);
+  const thumbUrl = url;
 
   const imgObj = {
     id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    url: base64 || url,
+    url: storageBucket ? url : (base64 || url),
     thumbUrl: thumbUrl,
     role: char.images.length === 0 ? 'card' : char.images.length === 1 ? 'front' : char.images.length === 2 ? 'profile' : 'right',
     label: char.images.length === 0 ? 'Card' : char.images.length === 1 ? 'Frente' : char.images.length === 2 ? 'Perfil' : '3/4',
@@ -898,10 +1058,16 @@ app.patch('/api/characters/:id/images/:imgId', (req, res) => {
   const { id, imgId } = req.params;
   const characters = readJson(CHARACTERS_FILE, []);
   const char = characters.find(c => c.id === id);
-  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  if (!char || !owns(req, char)) return res.status(404).json({ error: 'Personagem não encontrado' });
   const img = char.images.find(i => i.id === imgId);
   if (img) {
-    Object.assign(img, req.body);
+    if (req.body.useAsRef !== undefined) {
+      if (req.body.useAsRef === false && img.useAsRef && !char.images.some(i => i.id !== img.id && i.useAsRef)) {
+        return res.status(400).json({ error: 'Mantenha pelo menos uma imagem de referência.' });
+      }
+      img.useAsRef = !!req.body.useAsRef;
+    }
+    if (typeof req.body.label === 'string') img.label = req.body.label.slice(0, 80);
     writeJson(CHARACTERS_FILE, characters);
     broadcastEvent('character', char);
   }
@@ -912,7 +1078,7 @@ app.delete('/api/characters/:id/images/:imgId', (req, res) => {
   const { id, imgId } = req.params;
   const characters = readJson(CHARACTERS_FILE, []);
   const char = characters.find(c => c.id === id);
-  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  if (!char || !owns(req, char)) return res.status(404).json({ error: 'Personagem não encontrado' });
   char.images = char.images.filter(i => i.id !== imgId);
   if (char.cover === imgId) {
     char.cover = char.images[0]?.id || null;
@@ -932,6 +1098,8 @@ app.post('/api/images', async (req, res) => {
     const session = getSession(req);
     const userId = session?.user?.id || 'anonymous';
     const { model, prompt, n = 2, opts, title, refs, characterId, referenceIds } = req.body;
+    if (!Number.isInteger(n) || n < 1 || n > 4) return res.status(400).json({ error: 'Escolha entre 1 e 4 imagens.' });
+    if (characterId && !readJson(CHARACTERS_FILE, []).some(c => c.id === characterId && owns(req, c))) return res.status(404).json({ error: 'Personagem não encontrado.' });
 
     const jobId = `job_img_${Date.now()}`;
     const generatedUrls = [];
@@ -941,18 +1109,19 @@ app.post('/api/images', async (req, res) => {
     if (Array.isArray(referenceIds) && referenceIds.length > 0) {
       referenceIds.forEach(refId => {
         const found = uploadedReferenceMap.get(refId) || refList.find(r => r.id === refId);
-        if (found && found.url) {
+        if (found && owns(req, found) && found.url) {
           generatedUrls.push(found.url);
         }
       });
     }
+    if (Array.isArray(referenceIds) && referenceIds.length && !generatedUrls.length) return res.status(404).json({ error: 'Fotos de referência não encontradas.' });
 
-    // 2. Se nenhuma foto em referenceIds foi enviada, verifica refs do personagem (sem style anchors fictícios)
+    // 2. Resolve imagens pertencentes ao personagem autenticado.
     if (generatedUrls.length === 0 && Array.isArray(refs) && refs.length > 0) {
       refs.forEach(r => {
-        if (r.url && !r.url.includes('vector-') && !r.url.includes('card-') && !generatedUrls.includes(r.url)) {
-          generatedUrls.push(r.url);
-        }
+        const character = readJson(CHARACTERS_FILE, []).find(c => c.id === r.characterId && owns(req, c));
+        const image = character?.images?.find(i => i.id === r.imageId);
+        if (image?.url && !/\/(vector-|card-)/.test(image.url) && !generatedUrls.includes(image.url)) generatedUrls.push(image.url);
       });
     }
 
@@ -973,16 +1142,14 @@ app.post('/api/images', async (req, res) => {
           const seed = Math.floor(Math.random() * 10000000);
           const aiUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt + ', photorealistic, master studio lighting, 8k quality, neutral background')}?seed=${seed}&width=768&height=1024&model=flux&nologo=true`;
 
-          const response = await axios.get(aiUrl, { responseType: 'arraybuffer', timeout: 12000 });
+          const response = await axios.get(aiUrl, { responseType: 'arraybuffer', timeout: 30000 });
+          if (!String(response.headers['content-type'] || '').startsWith('image/')) throw new Error('O provedor não retornou imagem');
           const imgBuf = Buffer.from(response.data);
           const safeName = `gen_${Date.now()}_${i}.jpg`;
           saveUploadedBuffer(safeName, imgBuf, 'image/jpeg');
-          const base64Uri = `data:image/jpeg;base64,${imgBuf.toString('base64')}`;
-          generatedUrls.push(base64Uri);
+          generatedUrls.push(storageBucket ? `/api/uploads/${safeName}` : `data:image/jpeg;base64,${imgBuf.toString('base64')}`);
         } catch (err) {
-          console.warn(`[AI Gen] Falha ao baixar imagem gerada por IA:`, err.message);
-          const seed = Math.floor(Math.random() * 10000000);
-          generatedUrls.push(`https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?seed=${seed}&width=768&height=1024&model=flux&nologo=true`);
+          throw new Error(`Falha ao gerar imagem real: ${err.message}`);
         }
       }
     }
@@ -1024,7 +1191,7 @@ app.post('/api/images/save', (req, res) => {
     const { jobId, index = 0, characterId, name, identityEn, makeCover, kind = 'card' } = req.body;
     const jobs = readJson(JOBS_FILE, []);
     const job = jobs.find(j => j.id === jobId);
-    if (!job) return res.status(404).json({ error: 'Pedido de imagem não encontrado' });
+    if (!job || !owns(req, job)) return res.status(404).json({ error: 'Pedido de imagem não encontrado' });
 
     if (!job.savedImages) job.savedImages = [];
     if (!job.savedImages.includes(index)) job.savedImages.push(index);
@@ -1034,7 +1201,8 @@ app.post('/api/images/save', (req, res) => {
     const imgUrl = job.outputs?.imageUrls?.[index] || job.outputs?.imageUrls?.[0];
     if (!imgUrl) return res.status(400).json({ error: 'Nenhuma imagem encontrada neste pedido' });
     const characters = readJson(CHARACTERS_FILE, []);
-    let char = characterId ? characters.find(c => c.id === characterId) : null;
+    let char = characterId ? characters.find(c => c.id === characterId && owns(req, c)) : null;
+    if (characterId && !char) return res.status(404).json({ error: 'Personagem não encontrado' });
 
     const session = getSession(req);
     const userId = session?.user?.id || 'anonymous';
@@ -1083,30 +1251,49 @@ app.post('/api/images/save', (req, res) => {
 app.delete('/api/jobs/:id', (req, res) => {
   const id = req.params.id;
   let jobs = readJson(JOBS_FILE, []);
-  jobs = jobs.filter(j => j.id !== id);
+  jobs = jobs.filter(j => j.id !== id || !owns(req, j));
   writeJson(JOBS_FILE, jobs);
-  broadcastEvent('job:removed', { id });
+  broadcastEvent('job:removed', { id, userId: getSession(req).user.id });
   res.json({ ok: true });
 });
 
-app.post('/api/jobs/:id/retry', (req, res) => {
-  const id = req.params.id;
-  const jobs = readJson(JOBS_FILE, []);
-  const job = jobs.find(j => j.id === id);
-  if (!job) return res.status(404).json({ error: 'Job não encontrado' });
-  job.status = 'done';
-  job.error = null;
-  writeJson(JOBS_FILE, jobs);
-  broadcastEvent('job', job);
-  res.json(job);
+app.get('/api/jobs/:id/status', async (req, res) => {
+  const job = readJson(JOBS_FILE, []).find(j => j.id === req.params.id && owns(req, j));
+  if (!job) return res.status(404).json({ error: 'Job não encontrado.' });
+  try { return res.json(await refreshTakeJob(req, job)); }
+  catch (error) { return res.status(502).json({ error: error.message }); }
 });
 
-app.post('/api/jobs/:id/cancel', (req, res) => {
+app.post('/api/jobs/:id/retry', async (req, res) => {
   const id = req.params.id;
   const jobs = readJson(JOBS_FILE, []);
   const job = jobs.find(j => j.id === id);
-  if (!job) return res.status(404).json({ error: 'Job não encontrado' });
+  if (!job || !owns(req, job)) return res.status(404).json({ error: 'Job não encontrado' });
+  if (job.kind !== 'take' || !['failed', 'canceled'].includes(job.status)) return res.status(409).json({ error: 'Só é possível reenviar uma geração de vídeo encerrada com erro ou cancelada.' });
+  try {
+    const retried = await createTakeJob(req, {
+      characterIds: [job.input.characterId], clipIds: [job.input.clipId],
+      prompt: job.input.prompt, swapModels: [job.input.swapModel]
+    });
+    retried.retryOf = job.id;
+    writeJson(JOBS_FILE, readJson(JOBS_FILE, []));
+    return res.json({ jobs: [retried] });
+  } catch (error) { return res.status(502).json({ error: error.message }); }
+});
+
+app.post('/api/jobs/:id/cancel', async (req, res) => {
+  const id = req.params.id;
+  const jobs = readJson(JOBS_FILE, []);
+  const job = jobs.find(j => j.id === id);
+  if (!job || !owns(req, job)) return res.status(404).json({ error: 'Job não encontrado' });
+  if (job.status !== 'running' || !job.providerRequestId) return res.status(409).json({ error: 'Este job não está em geração ativa.' });
+  const hf = getSession(req)?.higgsfield;
+  const credential = hf?.apiCredential || (hf?.apiKey && hf?.apiSecret ? `${hf.apiKey}:${hf.apiSecret}` : '');
+  if (!credential) return res.status(409).json({ error: 'Configure a chave Higgsfield desta conta para cancelar.' });
+  try { await higgsfieldApi.cancel(credential, job.providerRequestId); }
+  catch (error) { return res.status(502).json({ error: error.message }); }
   job.status = 'canceled';
+  job.stage = 'canceled';
   writeJson(JOBS_FILE, jobs);
   broadcastEvent('job', job);
   res.json(job);
@@ -1115,9 +1302,11 @@ app.post('/api/jobs/:id/cancel', (req, res) => {
 app.patch('/api/jobs/:id', (req, res) => {
   const id = req.params.id;
   const jobs = readJson(JOBS_FILE, []);
-  const job = jobs.find(j => j.id === id);
+  const job = jobs.find(j => j.id === id && owns(req, j));
   if (job) {
-    Object.assign(job, req.body);
+    for (const field of ['title', 'favorite']) {
+      if (req.body?.[field] !== undefined) job[field] = req.body[field];
+    }
     writeJson(JOBS_FILE, jobs);
     broadcastEvent('job', job);
   }
@@ -1134,6 +1323,7 @@ app.post('/api/projects', (req, res) => {
   const projects = readJson(PROJECTS_FILE, []);
   const p = {
     id: `proj_${Date.now()}`,
+    userId: getSession(req).user.id,
     name: req.body?.name || `Projeto ${projects.length + 1}`,
     target: req.body?.target || 15,
     characterIds: []
@@ -1146,7 +1336,7 @@ app.post('/api/projects', (req, res) => {
 app.patch('/api/projects/:id', (req, res) => {
   const id = req.params.id;
   const projects = readJson(PROJECTS_FILE, []);
-  const p = projects.find(x => x.id === id);
+  const p = projects.find(x => x.id === id && owns(req, x));
   if (!p) return res.status(404).json({ error: 'Projeto não encontrado' });
   if (req.body.name !== undefined) p.name = req.body.name;
   if (req.body.target !== undefined) p.target = req.body.target;
@@ -1163,7 +1353,7 @@ app.patch('/api/projects/:id', (req, res) => {
 app.delete('/api/projects/:id', (req, res) => {
   const id = req.params.id;
   let projects = readJson(PROJECTS_FILE, []);
-  projects = projects.filter(x => x.id !== id);
+  projects = projects.filter(x => x.id !== id || !owns(req, x));
   writeJson(PROJECTS_FILE, projects);
   res.json({ ok: true });
 });
@@ -1176,7 +1366,7 @@ app.post('/api/estimate', (req, res) => {
 
   if (Array.isArray(clipIds)) {
     clipIds.forEach(id => {
-      const c = clips.find(x => x.id === id);
+      const c = clips.find(x => x.id === id && owns(req, x));
       if (c) totalSeconds += Number(c.info?.duration || 10);
     });
   }
@@ -1185,7 +1375,8 @@ app.post('/api/estimate', (req, res) => {
   const userCredits = session?.higgsfield?.credits || 0;
   const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
   const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 11;
-  const duration = Math.min(60, Math.max(4, Math.ceil(totalSeconds || 15)));
+  if (!totalSeconds) return res.status(400).json({ error: 'Selecione um vídeo válido.' });
+  const duration = Math.min(30, Math.max(4, Math.ceil(totalSeconds)));
   const credits = duration * ratePerSecond;
 
   res.json({
@@ -1201,172 +1392,123 @@ app.post('/api/estimate', (req, res) => {
   });
 });
 
-// 8. TAKES: Execução do Genjutsu
-app.post('/api/takes', async (req, res) => {
+// 8. TAKES: envio assíncrono ao Genjutsu e consulta do resultado real
+function takeCredential(session) {
+  const hf = session?.higgsfield;
+  return hf?.apiCredential || (hf?.apiKey && hf?.apiSecret ? `${hf.apiKey}:${hf.apiSecret}` : '');
+}
+
+function takeFailure(message, status = 400) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+async function signedMediaUrl(req, mediaUrl) {
+  if (!storageBucket) throw takeFailure('Armazenamento persistente indisponível.', 503);
+  const match = /^\/api\/uploads\/([a-zA-Z0-9._-]+)$/.exec(mediaUrl || '');
+  if (!match) throw takeFailure('Envie novamente a foto ou o vídeo antes de gerar.');
+  const file = storageBucket.file(`uploads/${match[1]}`);
+  let metadata;
+  try { [metadata] = await file.getMetadata(); }
+  catch { throw takeFailure('Arquivo de referência não encontrado. Envie-o novamente.'); }
+  if (metadata.metadata?.userId !== getSession(req).user.id) throw takeFailure('Arquivo de outra conta não pode ser usado.', 403);
+  const [url] = await file.getSignedUrl({ version: 'v4', action: 'read', expires: Date.now() + 24 * 60 * 60000 });
+  return url;
+}
+
+async function createTakeJob(req, { characterIds, clipIds, prompt, swapModels }) {
+  const session = getSession(req);
+  if (!session?.higgsfield?.connected) throw takeFailure('Conecte sua conta Higgsfield para gerar vídeos.', 401);
+  const credential = takeCredential(session);
+  if (!credential) throw takeFailure('O login Higgsfield conectado não autoriza a API oficial Genjutsu. Esta geração precisa de autorização de API da própria conta.', 409);
+  const character = readJson(CHARACTERS_FILE, []).find(c => c.id === characterIds?.[0] && owns(req, c));
+  const clip = readJson(CLIPS_FILE, []).find(c => c.id === clipIds?.[0] && owns(req, c));
+  if (!character || !clip) throw takeFailure('Selecione um personagem e um vídeo base no Estúdio.');
+  const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
+  if (!['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(modelId)) throw takeFailure('Qualidade de vídeo inválida.');
+  const duration = Number(clip.info?.duration);
+  if (!Number.isFinite(duration) || duration < 4 || duration > 30) throw takeFailure('O Genjutsu aceita vídeos de 4 a 30 segundos.');
+  const refs = (character.images || []).filter(image => image.useAsRef);
+  if (!refs.length) throw takeFailure('Marque ao menos uma foto real do personagem como referência.');
+  if (refs.length > 8) throw takeFailure('O Genjutsu aceita até oito fotos de referência.');
+  const [videoUrl, ...imageUrls] = await Promise.all([
+    signedMediaUrl(req, clip.url), ...refs.map(image => signedMediaUrl(req, image.url))
+  ]);
+  const jobs = readJson(JOBS_FILE, []);
+  const submittedAt = new Date().toISOString();
+  const job = {
+    id: `take_${crypto.randomUUID()}`, userId: session.user.id,
+    title: `${character.name} · ${clip.name}`, kind: 'take', status: 'running',
+    stage: 'submitting', billing: 'own', createdAt: submittedAt,
+    input: { characterId: character.id, clipId: clip.id, swapModel: modelId, prompt: prompt || '' },
+    price_credits: Math.ceil(duration) * (modelId === 'hf-genjutsu-720p' ? 7 : 11),
+    outputs: { thumbUrl: clip.thumbUrl },
+    steps: [{ key: 'swap', status: 'running', parts: [{ status: 'running', submittedAt }] }]
+  };
+  jobs.unshift(job);
+  writeJson(JOBS_FILE, jobs);
+  await requestStore.getStore()?.lastWrite;
   try {
-    const session = getSession(req);
-    const hf = session?.higgsfield;
-    if (!hf || !hf.connected || (!hf.token && !hf.apiKey)) {
-      return res.status(401).json({ error: 'Conecte sua conta Higgsfield para gerar vídeos.' });
-    }
-
-    const { characterIds, clipIds, prompt, swapModels } = req.body;
-    const characters = readJson(CHARACTERS_FILE, []);
-    const clips = readJson(CLIPS_FILE, []);
-    const jobs = readJson(JOBS_FILE, []);
-
-    const charId = characterIds?.[0];
-    const clipId = clipIds?.[0];
-    const character = characters.find(c => c.id === charId) || characters[0];
-    const clip = clips.find(c => c.id === clipId) || clips[0];
-
-    if (!character || !clip) {
-      return res.status(400).json({ error: 'Selecione um personagem e um vídeo base no Estúdio.' });
-    }
-
-    const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
-    const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 11;
-    const takeId = `take_${Date.now()}`;
-    const duration = clip.info?.duration || 15;
-    const billedCredits = Math.ceil(duration) * ratePerSecond;
-
-    const job = {
-      id: takeId,
-      userId: session.user.id,
-      title: `${character.name} · ${clip.name}`,
-      kind: 'take',
-      status: 'running',
-      stage: 'generating',
-      billing: 'own',
-      createdAt: new Date().toISOString(),
-      input: {
-        characterId: character.id,
-        clipId: clip.id,
-        swapModel: swapModels?.[0] || 'hf-genjutsu-1080p',
-        prompt: prompt || ''
-      },
-      price_credits: billedCredits,
-      higgsfield_credits: billedCredits,
-      outputs: {
-        thumbUrl: clip.thumbUrl
-      },
-      steps: [
-        { key: 'swap', status: 'running', parts: [{ status: 'running', submittedAt: new Date().toISOString() }] }
-      ]
-    };
-
-    jobs.unshift(job);
+    const result = await higgsfieldApi.submit(credential, {
+      prompt: prompt || `Replace the actor with ${character.name}, photorealistic, preserve natural motion`,
+      video_url: videoUrl, image_urls: imageUrls,
+      resolution: modelId === 'hf-genjutsu-720p' ? '720p' : '1080p'
+    });
+    job.providerRequestId = result.request_id;
+    job.stage = 'generating';
+    job.providerStatus = result.status || 'queued';
     writeJson(JOBS_FILE, jobs);
     broadcastEvent('job', job);
+    return job;
+  } catch (error) {
+    job.status = 'failed';
+    job.stage = 'failed';
+    job.error = error.message;
+    writeJson(JOBS_FILE, jobs);
+    broadcastEvent('job', job);
+    throw takeFailure(error.message, 502);
+  }
+}
 
+async function refreshTakeJob(req, job) {
+  if (job.kind !== 'take' || job.status !== 'running' || !job.providerRequestId) return job;
+  const credential = takeCredential(getSession(req));
+  if (!credential) throw takeFailure('Configure a chave Higgsfield desta conta para acompanhar o vídeo.', 409);
+  const result = await higgsfieldApi.status(credential, job.providerRequestId);
+  const status = String(result.status || '').toLowerCase();
+  const jobs = readJson(JOBS_FILE, []);
+  const current = jobs.find(item => item.id === job.id);
+  if (!current || current.status !== 'running') return current || job;
+  current.providerStatus = status;
+  if (status === 'completed') {
+    const videoUrl = result.video?.url || result.output?.video?.url || result.output?.video_url || result.result?.video?.url || result.video_url;
+    if (!videoUrl || !/^https:\/\//i.test(videoUrl)) {
+      current.status = 'failed'; current.stage = 'failed';
+      current.error = 'O Higgsfield concluiu o pedido, mas não retornou um vídeo válido.';
+    } else {
+      current.status = 'done'; current.stage = 'ready';
+      current.finishedAt = new Date().toISOString();
+      current.outputs = { ...current.outputs, masterUrl: videoUrl };
+      current.steps = [{ key: 'swap', status: 'done', parts: [{ status: 'done' }] }];
+    }
+  } else if (['failed', 'nsfw', 'canceled'].includes(status)) {
+    current.status = status === 'canceled' ? 'canceled' : 'failed';
+    current.stage = current.status;
+    current.errorKind = status === 'nsfw' ? 'nsfw' : undefined;
+    current.error = String(result.error?.message || result.error || result.message || `Higgsfield: ${status}`).slice(0, 500);
+  }
+  writeJson(JOBS_FILE, jobs);
+  broadcastEvent('job', current);
+  return current;
+}
+
+app.post('/api/takes', async (req, res) => {
+  try {
+    const job = await createTakeJob(req, req.body || {});
     res.json({ jobs: [job] });
-
-    (async () => {
-      try {
-        console.log(`[Take ${takeId}] Iniciando pipeline de troca de personagem para ${session.user.email}...`);
-
-        const localVideoPath = path.join(__dirname, clip.url.replace(/^\//, ''));
-        const audioPath = path.join(UPLOADS_DIR, `audio_${takeId}.aac`);
-        const finalVideoName = `final_${takeId}.mp4`;
-        const finalOutputPath = path.join(UPLOADS_DIR, finalVideoName);
-
-        // 1. Extração do áudio original
-        await new Promise((resolve, reject) => {
-          ffmpeg(localVideoPath)
-            .noVideo()
-            .audioCodec('aac')
-            .save(audioPath)
-            .on('end', resolve)
-            .on('error', reject);
-        });
-
-        // 2. Chamada ao Higgsfield (Se tiver API keys ou token)
-        if (hf.apiKey && hf.apiSecret) {
-          const client = new HiggsfieldClient({ apiKey: hf.apiKey, apiSecret: hf.apiSecret });
-
-          const hfImgs = [];
-          for (const img of character.images || []) {
-            const p = path.join(__dirname, img.url.replace(/^\//, ''));
-            if (fs.existsSync(p)) {
-              const buf = fs.readFileSync(p);
-              const pub = await client.upload(buf, 'image/jpeg');
-              hfImgs.push(pub);
-            }
-          }
-
-          const vidBuf = fs.readFileSync(localVideoPath);
-          const hfVid = await client.upload(vidBuf, 'video/mp4');
-
-          const hfHeaders = { 'hf-api-key': hf.apiKey, 'hf-secret': hf.apiSecret, 'Content-Type': 'application/json' };
-          const resolution = modelId === 'hf-genjutsu-720p' ? '720p' : '1080p';
-          const hfRes = await axios.post('https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0', {
-            prompt: prompt || `Swap person with ${character.name}, cinematic, photorealistic, natural lighting`,
-            video_url: hfVid,
-            image_urls: hfImgs,
-            resolution: resolution
-          }, { headers: hfHeaders });
-
-          const reqId = hfRes.data.request_id || hfRes.data.id;
-          let renderedUrl = null;
-
-          for (let i = 0; i < 90; i++) {
-            await new Promise(r => setTimeout(r, 6000));
-            const chk = await axios.get(`https://api.higgsfield.ai/requests/${reqId}/status`, { headers: hfHeaders });
-            if (chk.data.status === 'completed' || chk.data.status === 'done') {
-              renderedUrl = chk.data.output?.video_url || chk.data.result?.url;
-              break;
-            } else if (chk.data.status === 'failed') {
-              throw new Error(chk.data.error || 'Rejeitado pelo Higgsfield');
-            }
-          }
-
-          if (renderedUrl) {
-            const silentPath = path.join(UPLOADS_DIR, `silent_${takeId}.mp4`);
-            const writer = fs.createWriteStream(silentPath);
-            const stream = await axios({ method: 'get', url: renderedUrl, responseType: 'stream' });
-            stream.data.pipe(writer);
-            await new Promise(r => writer.on('finish', r));
-
-            await new Promise((r, reject) => {
-              ffmpeg().input(silentPath).input(audioPath).outputOptions(['-c:v copy', '-c:a aac', '-map 0:v:0', '-map 1:a:0?', '-shortest']).save(finalOutputPath).on('end', r).on('error', reject);
-            });
-            try { fs.unlinkSync(silentPath); fs.unlinkSync(audioPath); } catch {}
-          }
-        } else {
-          console.log(`[Take ${takeId}] Sem chaves de API diretas; gerando vídeo preview local...`);
-          await new Promise(r => setTimeout(r, 5000));
-          fs.copyFileSync(localVideoPath, finalOutputPath);
-        }
-
-        job.status = 'done';
-        job.stage = 'ready';
-        job.finishedAt = new Date().toISOString();
-        job.outputs = {
-          masterUrl: `/uploads/${finalVideoName}`,
-          thumbUrl: clip.thumbUrl
-        };
-        job.result = {
-          width: 1080,
-          height: 1920,
-          duration
-        };
-        job.steps = [{ key: 'swap', status: 'done', parts: [{ status: 'done' }] }];
-
-        writeJson(JOBS_FILE, jobs);
-        broadcastEvent('job', job);
-        console.log(`[Take ${takeId}] FINALIZADO COM SUCESSO!`);
-
-      } catch (err) {
-        console.error(`[Take ${takeId}] Erro:`, err.message);
-        job.status = 'failed';
-        job.error = err.message;
-        writeJson(JOBS_FILE, jobs);
-        broadcastEvent('job', job);
-      }
-    })();
-
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  } catch (error) {
+    res.status(error.status || 502).json({ error: error.message });
   }
 });
 
@@ -1427,28 +1569,14 @@ function getPkceSession(idOrState) {
 }
 
 function extractPkceFromState(state) {
-  if (!state || typeof state !== 'string') return null;
-  if (state.startsWith('hf_ey') || state.startsWith('hf_')) {
-    try {
-      const jsonStr = Buffer.from(state.slice(3), 'base64url').toString('utf8');
-      const parsed = JSON.parse(jsonStr);
-      if (parsed && parsed.v) {
-        return { verifier: parsed.v, redirectUri: parsed.r || 'http://localhost:8765/callback' };
-      }
-    } catch {}
-  }
-  if (state.startsWith('hf_v1_')) {
-    return { verifier: state.slice(6), redirectUri: 'http://localhost:8765/callback' };
-  }
   return null;
 }
 
 function createHiggsfieldLogin(req) {
   const verifier = base64Url(crypto.randomBytes(32));
   const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
-  const redirectUri = 'http://localhost:8765/callback';
-  const statePayload = { v: verifier, r: redirectUri };
-  const state = 'hf_' + Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+  const redirectUri = process.env.HF_OAUTH_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/callback`;
+  const state = base64Url(crypto.randomBytes(24));
   const loginId = `login_${Date.now()}`;
 
   const authorizeUrl = 'https://clerk.higgsfield.ai/oauth/authorize?' + new URLSearchParams({
@@ -1472,7 +1600,6 @@ function createHiggsfieldLogin(req) {
   };
 
   savePkceSession(loginObj);
-  currentLogin = loginObj;
   return loginObj;
 }
 
@@ -1480,25 +1607,7 @@ async function fetchRealHiggsfieldBalance(cfg) {
   let token = cfg?.token;
   if (!token && !cfg?.refreshToken) return null;
 
-  // 1. Tenta consulta via CLI oficial hf.exe (se executando localmente)
-  try {
-    const { execSync } = require('child_process');
-    const hfPath = path.join(__dirname, 'hf.exe');
-    if (fs.existsSync(hfPath)) {
-      const out = execSync(`"${hfPath}" account status --json`, { timeout: 6000, encoding: 'utf8' });
-      const parsed = JSON.parse(out);
-      if (parsed && (parsed.credits !== undefined || parsed.available_credits !== undefined)) {
-        const val = parsed.credits !== undefined ? parsed.credits : parsed.available_credits;
-        return {
-          credits: Number(val),
-          plan: parsed.subscription_plan_type || parsed.plan || cfg.plan,
-          email: parsed.email || cfg.email
-        };
-      }
-    }
-  } catch (cliErr) {}
-
-  // 2. Consulta direta aos endpoints oficiais do Higgsfield Gateway (fnf-api-gw)
+  // Consulta o saldo da conta correspondente ao token desta sessão.
   async function queryGw(activeToken) {
     let wsId = cfg.workspaceId;
     try {
@@ -1573,7 +1682,12 @@ async function fetchRealHiggsfieldBalance(cfg) {
 }
 
 app.get('/api/higgsfield', (req, res) => {
-  res.json(getHiggsfieldAccount(req));
+  const hf = getHiggsfieldAccount(req);
+  res.json({ ...hf, apiCredentialsConfigured: !!(hf.apiCredential || (hf.apiKey && hf.apiSecret)) });
+});
+
+app.post('/api/higgsfield/api-credentials', (req, res) => {
+  res.status(410).json({ error: 'O aplicativo está configurado para entrada somente via OAuth.' });
 });
 
 app.post('/api/auth/higgsfield/start', (req, res) => {
@@ -1598,13 +1712,13 @@ app.get('/api/auth/higgsfield/open', (req, res) => {
       me: session.higgsfield
     });
   }
-  res.json({ login: currentLogin || createHiggsfieldLogin(req) });
+  res.json({ login: createHiggsfieldLogin(req) });
 });
 
 app.get('/api/auth/higgsfield/:id', (req, res) => {
   const session = getSession(req);
   const isConn = !!(session && session.higgsfield && session.higgsfield.connected);
-  const pkce = getPkceSession(req.params.id) || currentLogin;
+  const pkce = getPkceSession(req.params.id);
   res.json({
     login: isConn ? { id: req.params.id, status: 'done' } : (pkce || { id: req.params.id, status: 'idle' }),
     signedIn: isConn,
@@ -1636,14 +1750,7 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
     }
   }
 
-  if (!verifier && currentLogin) {
-    verifier = currentLogin.verifier;
-    if (!redirectUri) redirectUri = currentLogin.redirectUri;
-  }
-
-  if (!redirectUri) {
-    redirectUri = 'http://localhost:8765/callback';
-  }
+  if (!verifier || !redirectUri) throw new Error('Sessão OAuth inválida ou expirada. Reinicie o login.');
 
   console.log(`[Higgsfield OAuth] Tentando troca: redirect_uri=${redirectUri}, verifier=${verifier ? 'PRESENTE' : 'AUSENTE'}`);
 
@@ -1746,7 +1853,6 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
     syncLocalCliCredentials(ownerCfg);
   }
 
-  currentLogin = null;
   return hfObj;
 }
 
@@ -1816,7 +1922,6 @@ async function connectWithHiggsfieldToken(accessToken, req, res) {
     syncLocalCliCredentials(ownerCfg);
   }
 
-  currentLogin = null;
   return hfObj;
 }
 
@@ -1840,7 +1945,7 @@ app.get(['/api/auth/callback', '/callback', '/api/callback'], async (req, res) =
 // Callback padrão de colar o endereço manual
 app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/callback'], async (req, res) => {
   const loginId = req.params.id;
-  const loginSession = getPkceSession(loginId) || currentLogin;
+  const loginSession = getPkceSession(loginId);
   const { url, token } = req.body;
   console.log(`[Higgsfield OAuth] Callback recebido para ${loginId}:`, { url: url ? url.slice(0, 100) : null, hasToken: !!token });
 
@@ -1892,8 +1997,8 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
 
     const fromState = extractPkceFromState(authState);
     const session = getPkceSession(authState) || loginSession;
-    let verifier = fromState?.verifier || session?.verifier || currentLogin?.verifier;
-    const redirectUri = fromState?.redirectUri || session?.redirectUri || 'http://localhost:8765/callback';
+    let verifier = session?.verifier;
+    const redirectUri = session?.redirectUri;
 
     const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, authState, req, res);
     return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
@@ -1908,7 +2013,6 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
 });
 
 app.post(['/api/higgsfield/connect/:id/cancel', '/api/auth/higgsfield/:id/cancel'], (req, res) => {
-  currentLogin = null;
   const acc = getHiggsfieldAccount(req);
   res.json(acc);
 });
@@ -2160,32 +2264,11 @@ app.post('/api/characters/:id/views', (req, res) => {
   const charId = req.params.id;
   const characters = readJson(CHARACTERS_FILE, []);
   const char = characters.find(c => c.id === charId);
-  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  if (!char || !owns(req, char)) return res.status(404).json({ error: 'Personagem não encontrado' });
 
   const baseImg = char.images[0] || (char.cover ? char.images.find(i => i.id === char.cover) : null);
   if (!baseImg) return res.status(400).json({ error: 'O personagem precisa de pelo menos uma imagem.' });
-  const viewRoles = [
-    { role: 'front', label: 'Frente' },
-    { role: 'profile', label: 'Perfil' },
-    { role: 'right', label: '3/4 Direita' }
-  ];
-
-  viewRoles.forEach((v, idx) => {
-    if (!char.images.some(i => i.role === v.role)) {
-      char.images.push({
-        id: `view_${Date.now()}_${idx}`,
-        url: baseImg.url,
-        thumbUrl: baseImg.thumbUrl || baseImg.url,
-        role: v.role,
-        label: v.label,
-        useAsRef: true
-      });
-    }
-  });
-
-  writeJson(CHARACTERS_FILE, characters);
-  broadcastEvent('character', char);
-  res.json(char);
+  return res.status(501).json({ error: 'Geração de vistas ainda não configurada no Higgsfield.' });
 });
 
 // Inicialização com fallback de portas
@@ -2196,7 +2279,7 @@ function startServer(port) {
     console.log(`   http://localhost:${port}`);
     console.log(`   (Landing Page: http://localhost:${port})`);
     console.log(`   (Aplicativo Estúdio: http://localhost:${port}/app)`);
-    console.log(`   (Acesso Dono direto: http://localhost:${port}/app?owner=1)`);
+    console.log(`   (Acesso Dono: /api/auth/owner com X-Owner-Access-Key configurado)`);
     console.log(`=======================================================`);
   });
 

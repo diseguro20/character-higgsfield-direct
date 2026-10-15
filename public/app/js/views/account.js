@@ -56,12 +56,38 @@ export function Login() {
         <div class="page">
           <div class="login">
             <${HiggsfieldSignIn} />
+            <${OwnerSignIn} />
             ${s.emailLogin ? html`<${EmailLogin} />` : null}
           </div>
         </div>
       </main>
       <${Toasts} />
     </div>`
+}
+
+function OwnerSignIn() {
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const enter = async e => {
+    e.preventDefault()
+    if (!key || busy) return
+    setBusy(true); setError('')
+    try {
+      await api.post('/api/auth/owner', { key })
+      setKey('')
+      window.location.assign('/app')
+    } catch (err) {
+      setError(err.message || 'Não foi possível entrar.')
+      setBusy(false)
+    }
+  }
+  return html`<section class="panel"><div class="panel__head"><h2 class="panel__title">Acesso do dono</h2></div>
+    <form class="panel__body stack" onSubmit=${enter}>
+      <input class="input" type="password" autocomplete="off" placeholder="Chave privada" value=${key} onInput=${e => setKey(e.target.value)} />
+      ${error ? html`<div class="small" role="alert">${error}</div>` : null}
+      <button class="btn btn--butter" type="submit" disabled=${busy || !key}>${busy ? 'Entrando…' : 'Entrar'}</button>
+    </form></section>`
 }
 
 // Entrar com a conta Higgsfield (sem sessão: rotas /api/auth/higgsfield, ações em state.js)
@@ -605,7 +631,7 @@ export function HiggsfieldPanel() {
         <div class="small dim">${higgsfieldStatusText(h)}</div>
         ${plan ? html`<div class="small dim hf-plan">Plano: ${plan}</div>` : null}</div>
       <div class="small muted">Créditos <b class="pixel">${h.credits == null ? '?' : num(h.credits)}</b>
-        <div class="small dim">Os vídeos e personagens usam os créditos desta conta.${h.checkedAt ? ` Saldo conferido ${ago(h.checkedAt)}.` : ''}</div></div>
+        <div class="small dim">Saldo da conta Higgsfield. A API Genjutsu tem autorização e faturamento separados.${h.checkedAt ? ` Saldo conferido ${ago(h.checkedAt)}.` : ''}</div></div>
       <div class="row" style="gap:6px">
         ${h.status === 'auth_error' ? html`<button class="btn btn--sm btn--butter" disabled=${busy} onClick=${connect}>Conectar de novo</button>` : null}
         <button class="btn btn--sm" disabled=${busy || refresh.busy || refresh.done} onClick=${() => { setErr(null); refresh.run() }}>${refresh.done ? 'Saldo conferido agora' : 'Atualizar saldo'}</button>
@@ -617,7 +643,7 @@ export function HiggsfieldPanel() {
       <div><div class="key__name"><span class="dot"></span>Sua conta Higgsfield</div><div class="small dim">não conectada</div></div>
       <div class="small muted">${h.mode === 'pool'
         ? 'Hoje você gera pelas contas do app. Conecte a sua conta Higgsfield para gerar com os créditos dela.'
-        : 'Você gera vídeos e personagens na sua própria conta do Higgsfield, com os seus créditos. Conecte uma vez e pronto.'}</div>
+        : 'Conecte sua própria conta Higgsfield para entrar e gerenciar seus personagens.'}</div>
       <div class="row"><button class="btn btn--sm btn--butter" disabled=${busy} onClick=${connect}>${step === 'failed' ? 'Tentar de novo' : 'Conectar minha conta Higgsfield'}</button></div>
     </div>`
   }

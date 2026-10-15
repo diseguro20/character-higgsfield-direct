@@ -1,6 +1,7 @@
 node_modules/
 .env
 .vercel/
+.edge-layout/
 firebase-debug.log
 uploads/*
 !uploads/.gitkeep
@@ -9,3 +10,7 @@ uploads/*
 hf.exe
 package/
 data/sessions.json
+data/projects.json
+
+.env*
+!.env.example

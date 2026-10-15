@@ -37,6 +37,31 @@ export const api = {
 
 // Envia arquivo bruto (sem multipart) mostrando o progresso.
 export function uploadFile(url, file, onProgress) {
+  if (file.size > 4 * 1024 * 1024) return (async () => {
+    let prepared
+    try {
+      prepared = await api.post('/api/uploads/prepare', {
+        name: file.name, contentType: file.type || (url.includes('/clips') ? 'video/mp4' : 'image/jpeg'), size: file.size,
+      })
+    } catch (e) {
+      if (e.status === 501) return rawUpload(url, file, onProgress)
+      throw e
+    }
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('PUT', prepared.uploadUrl)
+      xhr.setRequestHeader('Content-Type', prepared.contentType)
+      xhr.upload.onprogress = e => e.lengthComputable && onProgress?.(e.loaded / e.total)
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`O armazenamento recusou o arquivo (${xhr.status}).`))
+      xhr.onerror = () => reject(new Error('Não consegui enviar o arquivo ao armazenamento.'))
+      xhr.send(file)
+    })
+    return api.post(url, { uploadName: prepared.uploadName, name: file.name })
+  })()
+  return rawUpload(url, file, onProgress)
+}
+
+function rawUpload(url, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     const sep = url.includes('?') ? '&' : '?'

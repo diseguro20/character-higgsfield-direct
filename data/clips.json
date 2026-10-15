@@ -1,14 +1,1 @@
-[
-  {
-    "id": "clip_demo",
-    "name": "Demonstração Higgsfield.mp4",
-    "url": "/landing/assets/demo.mp4",
-    "thumbUrl": "/landing/assets/demo-poster.jpg",
-    "info": {
-      "duration": 14.5,
-      "width": 1080,
-      "height": 1920
-    },
-    "createdAt": "2026-10-14T12:00:00.000Z"
-  }
-]
+[]
