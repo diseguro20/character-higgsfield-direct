@@ -752,7 +752,7 @@ app.post('/api/characters/:id/images', (req, res) => {
 
 // 7. ORÇAMENTO (ESTIMATE): Calcula os créditos e partes do vídeo
 app.post('/api/estimate', (req, res) => {
-  const { clipIds } = req.body;
+  const { clipIds, swapModels } = req.body;
   const clips = readJson(CLIPS_FILE, []);
   let totalSeconds = 0;
 
@@ -765,8 +765,10 @@ app.post('/api/estimate', (req, res) => {
 
   const session = getSession(req);
   const userCredits = session?.higgsfield?.credits || 0;
+  const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
+  const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 11;
   const duration = Math.min(60, Math.max(4, Math.ceil(totalSeconds || 15)));
-  const credits = duration * 11;
+  const credits = duration * ratePerSecond;
 
   res.json({
     mode: 'own',
@@ -776,7 +778,7 @@ app.post('/api/estimate', (req, res) => {
     higgsfield_balance: userCredits,
     duration_choices: [
       { max_seconds: null, duration_s: duration, parts_count: duration > 30 ? 2 : 1, credits },
-      { max_seconds: 30, duration_s: Math.min(30, duration), parts_count: 1, credits: Math.min(30, duration) * 11 }
+      { max_seconds: 30, duration_s: Math.min(30, duration), parts_count: 1, credits: Math.min(30, duration) * ratePerSecond }
     ]
   });
 });
@@ -804,9 +806,11 @@ app.post('/api/takes', async (req, res) => {
       return res.status(400).json({ error: 'Selecione um personagem e um vídeo base no Estúdio.' });
     }
 
+    const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
+    const ratePerSecond = modelId === 'hf-genjutsu-720p' ? 7 : 11;
     const takeId = `take_${Date.now()}`;
     const duration = clip.info?.duration || 15;
-    const billedCredits = Math.ceil(duration) * 11;
+    const billedCredits = Math.ceil(duration) * ratePerSecond;
 
     const job = {
       id: takeId,
@@ -876,11 +880,12 @@ app.post('/api/takes', async (req, res) => {
           const hfVid = await client.upload(vidBuf, 'video/mp4');
 
           const hfHeaders = { 'hf-api-key': hf.apiKey, 'hf-secret': hf.apiSecret, 'Content-Type': 'application/json' };
+          const resolution = modelId === 'hf-genjutsu-720p' ? '720p' : '1080p';
           const hfRes = await axios.post('https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0', {
             prompt: prompt || `Swap person with ${character.name}, cinematic, photorealistic, natural lighting`,
             video_url: hfVid,
             image_urls: hfImgs,
-            resolution: '1080p'
+            resolution: resolution
           }, { headers: hfHeaders });
 
           const reqId = hfRes.data.request_id || hfRes.data.id;

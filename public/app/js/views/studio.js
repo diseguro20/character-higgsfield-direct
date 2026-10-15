@@ -154,7 +154,14 @@ function QualitySelect({ cfg, setCfg }) {
   const fam = familyOf(m.id)
   if (fam.length > 1) {
     return html`<${PopSelect} label="Qualidade" value=${m.id} onChange=${id => setCfg({ ...cfg, swapModels: [id] })}
-      options=${fam.map(x => ({ value: x.id, label: x.quality, price: perSecond(x) ? `${usd(perSecond(x))}/s` : '', disabled: !x.configured, disabledMsg: `Falta a chave do ${x.providerLabel}` }))} />`
+      options=${fam.map(x => ({
+        value: x.id,
+        label: `${x.quality} (${modelCreditsPerSecond(x)} cr/s)`,
+        desc: x.id.includes('720p') ? 'Mais rápido e econômico: usa apenas 7 créditos por segundo' : 'Resolução máxima Full HD: 11 créditos por segundo',
+        price: `${cr(modelCreditsPerSecond(x))}/s`,
+        disabled: !x.configured,
+        disabledMsg: `Falta a chave do ${x.providerLabel}`
+      }))} />`
   }
   const opt = (m.options || []).find(o => o.key === 'resolution')
   if (opt) {
@@ -795,6 +802,7 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
     <${StepHead} n="3" title="Gerar" done=${ready} />
     <div class="panel__body stack" style="gap:10px">
       <${ModelSelect} cfg=${cfg} setCfg=${setCfg} />
+      <${QualitySelect} cfg=${cfg} setCfg=${setCfg} />
       <${DurationPick} clips=${clips} cfg=${cfg} setCfg=${setCfg} est=${est} count=${count} limits=${swap?.limits} />
       ${castBad ? html`<div class="warnbox">${castMax > 1 ? `Este modelo faz collab de até ${castMax} personagens.` : `${swap?.familyLabel || 'Este modelo'} troca uma pessoa só. Para collab use o Higgsfield Genjutsu ou o Kling Omni Edit.`}</div>` : null}
       ${castShort ? html`<div class="warnbox">Collab ligado: escolha pelo menos 2 personagens no passo 1 (ou desligue o collab).</div>` : null}
