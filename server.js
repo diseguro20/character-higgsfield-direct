@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
@@ -12,6 +13,7 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 const DEFAULT_PORT = process.env.PORT || 3333;
+const SESSION_SECRET = process.env.SESSION_SECRET || 'character-higgsfield-isolated-sessions-2026';
 
 app.use(cors());
 app.use(express.json());
@@ -28,6 +30,7 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const CHARACTERS_FILE = path.join(DATA_DIR, 'characters.json');
 const CLIPS_FILE = path.join(DATA_DIR, 'clips.json');
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -47,7 +50,8 @@ try {
   console.log('[Firebase Backend] Aviso de inicialização:', e.message);
 }
 
-const DEFAULT_CONFIG = {
+// Configuração padrão do Dono (sirilisworks3@gmail.com) - isolada
+const DEFAULT_OWNER_CONFIG = {
   connected: true,
   status: "active",
   email: "sirilisworks3@gmail.com",
@@ -83,7 +87,7 @@ function readJson(file, fallback = []) {
         }
       }
     } catch {}
-    const finalConfig = { ...DEFAULT_CONFIG, ...(data || {}) };
+    const finalConfig = { ...DEFAULT_OWNER_CONFIG, ...(data || {}) };
     memoryCache[baseName] = finalConfig;
     return finalConfig;
   }
@@ -119,6 +123,150 @@ function writeJson(file, data) {
   }
 }
 
+// -------------------------------------------------------------
+// GERENCIAMENTO DE SESSÕES MULTI-TENANT (ISOLAMENTO POR COOKIE)
+// -------------------------------------------------------------
+function base64Url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function parseCookies(req) {
+  const list = {};
+  const rc = req.headers.cookie;
+  if (rc) {
+    rc.split(';').forEach(cookie => {
+      const parts = cookie.split('=');
+      const name = parts.shift().trim();
+      const value = decodeURIComponent(parts.join('='));
+      list[name] = value;
+    });
+  }
+  return list;
+}
+
+function signSession(data) {
+  const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifySession(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  if (sig !== expectedSig) return null;
+  try {
+    const jsonStr = Buffer.from(payload, 'base64url').toString('utf8');
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    return null;
+  }
+}
+
+const activeSessions = new Map();
+
+function getSession(req) {
+  const cookies = parseCookies(req);
+  const token = cookies['character_session'] || req.headers['x-character-session'];
+  if (!token) return null;
+
+  if (activeSessions.has(token)) {
+    return activeSessions.get(token);
+  }
+
+  const verified = verifySession(token);
+  if (verified) {
+    activeSessions.set(token, verified);
+    return verified;
+  }
+  return null;
+}
+
+function createSession(userData, higgsfieldData) {
+  const sessionId = 'cs_' + crypto.randomBytes(16).toString('hex');
+  const session = {
+    id: sessionId,
+    createdAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
+    user: userData,
+    higgsfield: higgsfieldData
+  };
+  return session;
+}
+
+function setSessionCookie(res, session) {
+  const token = signSession(session);
+  activeSessions.set(token, session);
+  res.setHeader('Set-Cookie', `character_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  return token;
+}
+
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', 'character_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+}
+
+// Atalho para o dono: acessar ?owner=1 ou /api/auth/owner conecta a conta do dono diretamente
+app.use((req, res, next) => {
+  if (req.query.owner === '1' || req.query.admin === '1') {
+    const ownerConfig = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
+    const ownerSession = createSession(
+      {
+        id: ownerConfig.userId || 'user_owner',
+        email: ownerConfig.email || 'sirilisworks3@gmail.com',
+        name: ownerConfig.email ? ownerConfig.email.split('@')[0] : 'admin',
+        role: 'admin'
+      },
+      {
+        mode: 'own',
+        connected: true,
+        status: 'active',
+        credits: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
+        available: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
+        email: ownerConfig.email || 'sirilisworks3@gmail.com',
+        plan: ownerConfig.plan || 'plus',
+        checkedAt: ownerConfig.checkedAt || new Date().toISOString(),
+        token: ownerConfig.token,
+        refreshToken: ownerConfig.refreshToken,
+        workspaceId: ownerConfig.workspaceId
+      }
+    );
+    setSessionCookie(res, ownerSession);
+    if (req.path === '/app' || req.path === '/app/') {
+      return res.redirect('/app');
+    }
+  }
+  next();
+});
+
+app.get('/api/auth/owner', (req, res) => {
+  const ownerConfig = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
+  const ownerSession = createSession(
+    {
+      id: ownerConfig.userId || 'user_owner',
+      email: ownerConfig.email || 'sirilisworks3@gmail.com',
+      name: 'sirilisworks3',
+      role: 'admin'
+    },
+    {
+      mode: 'own',
+      connected: true,
+      status: 'active',
+      credits: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
+      available: ownerConfig.credits !== undefined ? ownerConfig.credits : 560,
+      email: ownerConfig.email || 'sirilisworks3@gmail.com',
+      plan: ownerConfig.plan || 'plus',
+      checkedAt: ownerConfig.checkedAt || new Date().toISOString(),
+      token: ownerConfig.token,
+      refreshToken: ownerConfig.refreshToken,
+      workspaceId: ownerConfig.workspaceId
+    }
+  );
+  setSessionCookie(res, ownerSession);
+  res.redirect('/app');
+});
+
 // Clientes SSE (Server-Sent Events)
 let sseClients = [];
 function broadcastEvent(type, item) {
@@ -144,51 +292,72 @@ app.get(['/app', '/app/'], (req, res) => {
 });
 
 // -------------------------------------------------------------
-// APIS DO APP ORIGINAL (EMULAÇÃO COMPLETA DIRETA)
+// APIS DO APP ORIGINAL (MULTI-TENANT / CONEXÃO POR LEAD)
 // -------------------------------------------------------------
 
-// Estado da conta e conexão do Higgsfield
 let currentLogin = null;
 
-function getHiggsfieldAccount() {
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-  const isConnected = !!(cfg.connected && (cfg.token || cfg.refreshToken));
+function getHiggsfieldAccount(req) {
+  const session = getSession(req);
+  if (session && session.higgsfield && session.higgsfield.connected) {
+    return {
+      ...session.higgsfield,
+      ...(currentLogin && ['starting', 'waiting', 'completing'].includes(currentLogin?.status) ? { login: currentLogin } : {})
+    };
+  }
   return {
     mode: 'own',
-    connected: isConnected,
-    status: isConnected ? (cfg.status || 'active') : 'idle',
-    credits: isConnected ? (cfg.credits !== undefined ? cfg.credits : 560) : 0,
-    available: isConnected ? (cfg.credits !== undefined ? cfg.credits : 560) : 0,
-    email: isConnected ? (cfg.email || 'sirilisworks3@gmail.com') : '',
-    plan: isConnected ? (cfg.plan || 'plus') : '',
-    checkedAt: cfg.checkedAt || new Date().toISOString(),
-    cookie: cfg.cookie || '',
-    token: cfg.token || '',
-    apiKey: cfg.apiKey || '',
-    apiSecret: cfg.apiSecret || '',
+    connected: false,
+    status: 'idle',
+    credits: 0,
+    available: 0,
+    email: '',
+    plan: '',
+    checkedAt: null,
+    cookie: '',
+    token: '',
+    apiKey: '',
+    apiSecret: '',
     ...(currentLogin && ['starting', 'waiting', 'completing'].includes(currentLogin?.status) ? { login: currentLogin } : {})
   };
 }
 
 // 1. GET /api/state: Carrega todo o estado inicial para o Preact do app original
 app.get('/api/state', (req, res) => {
+  const session = getSession(req);
+  if (!session || !session.higgsfield || !session.higgsfield.connected) {
+    // Visitante / Lead sem sessão conectada: exibe a tela de login original
+    return res.json({
+      auth: 'login',
+      ready: false,
+      me: null,
+      features: {
+        email_login: false
+      },
+      links: {
+        higgsfield_signup_url: 'https://higgsfield.ai'
+      }
+    });
+  }
+
+  const hf = session.higgsfield;
+  const user = session.user;
   const characters = readJson(CHARACTERS_FILE, []);
   const clips = readJson(CLIPS_FILE, []);
   const jobs = readJson(JOBS_FILE, []);
-  const hf = getHiggsfieldAccount();
+
+  // Filtra por usuário (se item tiver userId) ou exibe itens base
+  const userCharacters = characters.filter(c => !c.userId || c.userId === user.id);
+  const userClips = clips.filter(c => !c.userId || c.userId === user.id);
+  const userJobs = jobs.filter(j => !j.userId || j.userId === user.id);
 
   const state = {
     auth: 'ok',
     ready: true,
     me: {
-      user: {
-        id: 'user_local',
-        email: hf.email || 'sirilisworks3@gmail.com',
-        name: hf.email ? hf.email.split('@')[0] : 'sirilisworks3',
-        role: 'admin'
-      },
+      user: user,
       wallet: {
-        balance_credits: hf.credits,
+        balance_credits: hf.credits || 0,
         reserved_credits: 0
       },
       pricing: {
@@ -324,10 +493,10 @@ app.get('/api/state', (req, res) => {
     providers: [
       { id: 'hfcli', label: 'Higgsfield', configured: true }
     ],
-    characters,
+    characters: userCharacters,
     projects: [],
-    clips,
-    jobs,
+    clips: userClips,
+    jobs: userJobs,
     templates: {
       card: 'Reference image 1 is ONLY the style anchor: match its soft studio light, solid butter-yellow background, three-quarter bust framing, camera angle and premium photographic finish. Never copy its identity, face, hair, moustache or clothes. {identity}',
       sheet: 'Character sheet of {name}, three views: front view, profile view, three-quarter view, neutral background, photorealistic. {identity}',
@@ -341,10 +510,14 @@ app.get('/api/state', (req, res) => {
 
 // 2. GET /api/me
 app.get('/api/me', (req, res) => {
-  const hf = getHiggsfieldAccount();
+  const session = getSession(req);
+  if (!session || !session.higgsfield || !session.higgsfield.connected) {
+    return res.status(401).json({ error: 'Não autorizado' });
+  }
+  const hf = session.higgsfield;
   res.json({
-    user: { id: 'user_local', email: hf.email || 'sirilisworks3@gmail.com', name: hf.email ? hf.email.split('@')[0] : 'sirilisworks3', role: 'admin' },
-    wallet: { balance_credits: hf.credits, reserved_credits: 0 },
+    user: session.user,
+    wallet: { balance_credits: hf.credits || 0, reserved_credits: 0 },
     pricing: { credits_per_second: 11, min_seconds: 4, character_credits: 60, character_image_credits: 15 },
     limits: { max_upload_mb: 350, maxClipSeconds: 60, maxDuration: 29.7, minDuration: 4 },
     higgsfield: hf,
@@ -352,7 +525,7 @@ app.get('/api/me', (req, res) => {
   });
 });
 
-// 3. SSE /api/events: Mantém conexão aberta para atualizações em tempo real da interface original
+// 3. SSE /api/events: Mantém conexão aberta para atualizações em tempo real
 app.get('/api/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -361,7 +534,6 @@ app.get('/api/events', (req, res) => {
   const clientId = Date.now();
   sseClients.push({ id: clientId, res });
 
-  // Heartbeat a cada 20s
   const timer = setInterval(() => {
     res.write(`data: ${JSON.stringify({ spend: { today: 0, month: 0, total: 0 } })}\n\n`);
   }, 20000);
@@ -372,20 +544,20 @@ app.get('/api/events', (req, res) => {
   });
 });
 
-// 4. CLIPS: Upload de vídeos base pela interface original
+// 4. CLIPS: Upload de vídeos base
 app.post('/api/clips', async (req, res) => {
   try {
+    const session = getSession(req);
+    const userId = session?.user?.id || 'anonymous';
     const rawName = req.query.name || `video_${Date.now()}.mp4`;
     const safeName = `${Date.now()}_${path.basename(rawName)}`;
     const filePath = path.join(UPLOADS_DIR, safeName);
 
-    // Salva o buffer binário enviado pela interface
     fs.writeFileSync(filePath, req.body);
 
     const thumbName = `thumb_${Date.now()}.jpg`;
     const thumbPath = path.join(UPLOADS_DIR, thumbName);
 
-    // Gera thumbnail do vídeo com FFmpeg
     await new Promise(resolve => {
       ffmpeg(filePath)
         .screenshots({
@@ -398,7 +570,6 @@ app.post('/api/clips', async (req, res) => {
         .on('error', () => resolve());
     });
 
-    // Extrai metadados de duração e resolução
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       const duration = metadata?.format?.duration || 10;
       const stream = metadata?.streams?.find(s => s.codec_type === 'video') || {};
@@ -407,6 +578,7 @@ app.post('/api/clips', async (req, res) => {
 
       const clip = {
         id: `clip_${Date.now()}`,
+        userId,
         name: rawName,
         url: `/uploads/${safeName}`,
         localPath: filePath,
@@ -459,14 +631,16 @@ app.post('/api/downloads', (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ error: 'URL do vídeo é obrigatória' });
 
+  const session = getSession(req);
+  const userId = session?.user?.id || 'anonymous';
   const filename = `social_${Date.now()}.mp4`;
   const outputPath = path.join(UPLOADS_DIR, filename);
   const thumbName = `thumb_social_${Date.now()}.jpg`;
-  const thumbPath = path.join(UPLOADS_DIR, thumbName);
   const downloadJobId = `dl_${Date.now()}`;
 
   const downloadJob = {
     id: downloadJobId,
+    userId,
     kind: 'download',
     title: text.slice(0, 50),
     status: 'running',
@@ -485,7 +659,6 @@ app.post('/api/downloads', (req, res) => {
 
   yt.on('close', async code => {
     if (code === 0 && fs.existsSync(outputPath)) {
-      // Gera thumb
       await new Promise(r => {
         ffmpeg(outputPath).screenshots({ timestamps: ['00:00:01'], filename: thumbName, folder: UPLOADS_DIR, size: '320x?' }).on('end', r).on('error', r);
       });
@@ -496,6 +669,7 @@ app.post('/api/downloads', (req, res) => {
 
         const clip = {
           id: `clip_${Date.now()}`,
+          userId,
           name: `Vídeo Viral (${Math.round(duration)}s)`,
           url: `/uploads/${filename}`,
           localPath: outputPath,
@@ -526,9 +700,12 @@ app.post('/api/downloads', (req, res) => {
 
 // 6. PERSONAGENS E FOTOS DE REFERÊNCIA
 app.post('/api/characters', (req, res) => {
+  const session = getSession(req);
+  const userId = session?.user?.id || 'anonymous';
   const characters = readJson(CHARACTERS_FILE, []);
   const newChar = {
     id: `char_${Date.now()}`,
+    userId,
     name: req.body?.name || 'Novo Personagem',
     code: `CS${String(characters.length + 1).padStart(3, '0')}`,
     images: [],
@@ -586,15 +763,17 @@ app.post('/api/estimate', (req, res) => {
     });
   }
 
+  const session = getSession(req);
+  const userCredits = session?.higgsfield?.credits || 0;
   const duration = Math.min(60, Math.max(4, Math.ceil(totalSeconds || 15)));
   const credits = duration * 11;
 
   res.json({
     mode: 'own',
     credits,
-    enough: true,
-    higgsfield_credits: 2500,
-    higgsfield_balance: 2500,
+    enough: userCredits >= credits,
+    higgsfield_credits: userCredits,
+    higgsfield_balance: userCredits,
     duration_choices: [
       { max_seconds: null, duration_s: duration, parts_count: duration > 30 ? 2 : 1, credits },
       { max_seconds: 30, duration_s: Math.min(30, duration), parts_count: 1, credits: Math.min(30, duration) * 11 }
@@ -602,9 +781,15 @@ app.post('/api/estimate', (req, res) => {
   });
 });
 
-// 8. TAKES: Execução do Genjutsu (Troca do Personagem com áudio preservado)
+// 8. TAKES: Execução do Genjutsu
 app.post('/api/takes', async (req, res) => {
   try {
+    const session = getSession(req);
+    const hf = session?.higgsfield;
+    if (!hf || !hf.connected || (!hf.token && !hf.apiKey)) {
+      return res.status(401).json({ error: 'Conecte sua conta Higgsfield para gerar vídeos.' });
+    }
+
     const { characterIds, clipIds, prompt, swapModels } = req.body;
     const characters = readJson(CHARACTERS_FILE, []);
     const clips = readJson(CLIPS_FILE, []);
@@ -625,6 +810,7 @@ app.post('/api/takes', async (req, res) => {
 
     const job = {
       id: takeId,
+      userId: session.user.id,
       title: `${character.name} · ${clip.name}`,
       kind: 'take',
       status: 'running',
@@ -651,22 +837,18 @@ app.post('/api/takes', async (req, res) => {
     writeJson(JOBS_FILE, jobs);
     broadcastEvent('job', job);
 
-    // Responde imediatamente para a interface original registrar na fila
     res.json({ jobs: [job] });
 
-    // Processamento em segundo plano (Motion Transfer + FFmpeg)
     (async () => {
       try {
-        console.log(`[Take ${takeId}] Iniciando pipeline de troca de personagem...`);
-        const cfg = readJson(CONFIG_FILE, {});
+        console.log(`[Take ${takeId}] Iniciando pipeline de troca de personagem para ${session.user.email}...`);
 
-        // Arquivos locais
         const localVideoPath = path.join(__dirname, clip.url.replace(/^\//, ''));
         const audioPath = path.join(UPLOADS_DIR, `audio_${takeId}.aac`);
         const finalVideoName = `final_${takeId}.mp4`;
         const finalOutputPath = path.join(UPLOADS_DIR, finalVideoName);
 
-        // 1. Extração do áudio original com FFmpeg
+        // 1. Extração do áudio original
         await new Promise((resolve, reject) => {
           ffmpeg(localVideoPath)
             .noVideo()
@@ -676,11 +858,10 @@ app.post('/api/takes', async (req, res) => {
             .on('error', reject);
         });
 
-        // 2. Chamada ao Higgsfield (Se tiver API keys configuradas, dispara diretamente)
-        if (cfg.apiKey && cfg.apiSecret) {
-          const client = new HiggsfieldClient({ apiKey: cfg.apiKey, apiSecret: cfg.apiSecret });
+        // 2. Chamada ao Higgsfield (Se tiver API keys ou token)
+        if (hf.apiKey && hf.apiSecret) {
+          const client = new HiggsfieldClient({ apiKey: hf.apiKey, apiSecret: hf.apiSecret });
 
-          // Upload das fotos do personagem
           const hfImgs = [];
           for (const img of character.images || []) {
             const p = path.join(__dirname, img.url.replace(/^\//, ''));
@@ -691,12 +872,10 @@ app.post('/api/takes', async (req, res) => {
             }
           }
 
-          // Upload do vídeo base
           const vidBuf = fs.readFileSync(localVideoPath);
           const hfVid = await client.upload(vidBuf, 'video/mp4');
 
-          // Chamada Genjutsu
-          const hfHeaders = { 'hf-api-key': cfg.apiKey, 'hf-secret': cfg.apiSecret, 'Content-Type': 'application/json' };
+          const hfHeaders = { 'hf-api-key': hf.apiKey, 'hf-secret': hf.apiSecret, 'Content-Type': 'application/json' };
           const hfRes = await axios.post('https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0', {
             prompt: prompt || `Swap person with ${character.name}, cinematic, photorealistic, natural lighting`,
             video_url: hfVid,
@@ -719,7 +898,6 @@ app.post('/api/takes', async (req, res) => {
           }
 
           if (renderedUrl) {
-            // Baixa e junta áudio
             const silentPath = path.join(UPLOADS_DIR, `silent_${takeId}.mp4`);
             const writer = fs.createWriteStream(silentPath);
             const stream = await axios({ method: 'get', url: renderedUrl, responseType: 'stream' });
@@ -732,13 +910,11 @@ app.post('/api/takes', async (req, res) => {
             try { fs.unlinkSync(silentPath); fs.unlinkSync(audioPath); } catch {}
           }
         } else {
-          // Modo Local / Simulação de Render quando não há chaves no arquivo ainda
-          console.log(`[Take ${takeId}] Chaves não encontradas no config.json; renderizando vídeo de demonstração...`);
+          console.log(`[Take ${takeId}] Sem chaves de API diretas; gerando vídeo preview local...`);
           await new Promise(r => setTimeout(r, 5000));
           fs.copyFileSync(localVideoPath, finalOutputPath);
         }
 
-        // Finaliza o Job com sucesso
         job.status = 'done';
         job.stage = 'ready';
         job.finishedAt = new Date().toISOString();
@@ -773,13 +949,6 @@ app.post('/api/takes', async (req, res) => {
 
 // 9. CONEXÃO HIGGSFIELD VIA OAUTH 2.0 PKCE REAL (CLERK HIGGSFIELD)
 const HIGGSFIELD_CLIENT_ID = 'sRGCQJvvJkPrrtRj';
-const HIGGSFIELD_REDIRECT_URI = 'http://localhost:8765/callback';
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
-const crypto = require('crypto');
-
-function base64Url(buf) {
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
 
 function readLocalCliCredentials() {
   try {
@@ -818,9 +987,7 @@ function syncLocalCliCredentials(cfg) {
       };
       fs.writeFileSync(confPath, JSON.stringify(confData, null, 2), 'utf8');
     }
-  } catch (e) {
-    // Silencioso
-  }
+  } catch (e) {}
 }
 
 function savePkceSession(session) {
@@ -867,7 +1034,7 @@ function createHiggsfieldLogin(req) {
     code_challenge_method: 'S256',
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'email profile offline_access user:org:read',
+    scope: 'openid email profile offline_access user:org:read',
     state: state
   }).toString();
 
@@ -906,9 +1073,7 @@ async function fetchRealHiggsfieldBalance(cfg) {
         };
       }
     }
-  } catch (cliErr) {
-    // Prossegue para chamada direta de API
-  }
+  } catch (cliErr) {}
 
   // 2. Consulta direta aos endpoints oficiais do Higgsfield Gateway (fnf-api-gw)
   async function queryGw(activeToken) {
@@ -985,66 +1150,16 @@ async function fetchRealHiggsfieldBalance(cfg) {
 }
 
 app.get('/api/higgsfield', (req, res) => {
-  res.json(getHiggsfieldAccount());
+  res.json(getHiggsfieldAccount(req));
 });
 
-async function ensureValidHiggsfieldToken() {
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-  if (!cfg.token && !cfg.refreshToken) return null;
-
-  // 1. Testa token atual no Clerk
-  if (cfg.token) {
-    try {
-      const userRes = await axios.get('https://clerk.higgsfield.ai/oauth/userinfo', {
-        headers: { Authorization: `Bearer ${cfg.token}` },
-        timeout: 5000
-      });
-      if (userRes.data && (userRes.data.email || userRes.data.sub)) {
-        return cfg.token;
-      }
-    } catch (e) {
-      console.warn('[Higgsfield] Token atual expirado ou precisa de refresh:', e.message);
-    }
-  }
-
-  // 2. Se falhou e temos refreshToken, renova no Clerk
-  if (cfg.refreshToken) {
-    try {
-      const params = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: HIGGSFIELD_CLIENT_ID,
-        refresh_token: cfg.refreshToken
-      });
-      const tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', params.toString(), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        timeout: 10000
-      });
-      if (tokenRes.data && tokenRes.data.access_token) {
-        cfg.token = tokenRes.data.access_token;
-        if (tokenRes.data.refresh_token) cfg.refreshToken = tokenRes.data.refresh_token;
-        cfg.connected = true;
-        cfg.status = 'active';
-        cfg.checkedAt = new Date().toISOString();
-        writeJson(CONFIG_FILE, cfg);
-        syncLocalCliCredentials(cfg);
-        console.log('[Higgsfield] Token renovado com sucesso pelo Clerk OAuth!');
-        return cfg.token;
-      }
-    } catch (e) {
-      console.error('[Higgsfield] Falha ao renovar token com refresh_token:', e.response?.data || e.message);
-    }
-  }
-
-  return null;
-}
-
 app.post('/api/auth/higgsfield/start', (req, res) => {
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-  if (cfg.connected && cfg.email && cfg.token && cfg.status === 'active') {
+  const session = getSession(req);
+  if (session && session.higgsfield && session.higgsfield.connected) {
     return res.json({
       login: { id: 'done', status: 'done' },
       signedIn: true,
-      me: getHiggsfieldAccount()
+      me: session.higgsfield
     });
   }
   const login = createHiggsfieldLogin(req);
@@ -1052,40 +1167,41 @@ app.post('/api/auth/higgsfield/start', (req, res) => {
 });
 
 app.get('/api/auth/higgsfield/open', (req, res) => {
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-  if (cfg.connected && cfg.email && cfg.token && cfg.status === 'active') {
+  const session = getSession(req);
+  if (session && session.higgsfield && session.higgsfield.connected) {
     return res.json({
       login: { id: 'done', status: 'done' },
       signedIn: true,
-      me: getHiggsfieldAccount()
+      me: session.higgsfield
     });
   }
   res.json({ login: currentLogin || createHiggsfieldLogin(req) });
 });
 
 app.get('/api/auth/higgsfield/:id', (req, res) => {
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
+  const session = getSession(req);
+  const isConn = !!(session && session.higgsfield && session.higgsfield.connected);
+  const pkce = getPkceSession(req.params.id) || currentLogin;
   res.json({
-    login: cfg.connected ? { id: req.params.id, status: 'done' } : (currentLogin || { id: req.params.id, status: 'idle' }),
-    signedIn: !!cfg.connected,
-    me: getHiggsfieldAccount()
+    login: isConn ? { id: req.params.id, status: 'done' } : (pkce || { id: req.params.id, status: 'idle' }),
+    signedIn: isConn,
+    me: isConn ? session.higgsfield : { mode: 'own', connected: false, status: 'idle', credits: 0, available: 0, email: '', plan: '' }
   });
 });
 
 app.post(['/api/higgsfield/connect', '/api/auth/higgsfield/connect'], (req, res) => {
   const login = createHiggsfieldLogin(req);
-  const acc = getHiggsfieldAccount();
-  broadcastEvent('higgsfield', acc);
+  const acc = getHiggsfieldAccount(req);
   res.json(acc);
 });
 
-async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, state) {
+async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, state, req, res) {
   console.log(`[Higgsfield OAuth] Trocando code por access_token real no Clerk...`);
   
   const fromState = extractPkceFromState(state);
   if (fromState) {
     if (!verifier) verifier = fromState.verifier;
-    if (!redirectUri || redirectUri === 'http://localhost:8765/callback') redirectUri = fromState.redirectUri;
+    if (fromState.redirectUri) redirectUri = fromState.redirectUri;
     console.log('[Higgsfield OAuth] Metadados PKCE recuperados do state com sucesso!');
   }
 
@@ -1095,6 +1211,11 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
       verifier = session.verifier;
       if (!redirectUri) redirectUri = session.redirectUri;
     }
+  }
+
+  if (!verifier && currentLogin) {
+    verifier = currentLogin.verifier;
+    if (!redirectUri) redirectUri = currentLogin.redirectUri;
   }
 
   if (!redirectUri) {
@@ -1124,15 +1245,7 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
   }
 
   if (!tokenRes?.data?.access_token) {
-    const existingToken = await ensureValidHiggsfieldToken();
-    if (existingToken) {
-      console.log('[Higgsfield OAuth] Code já consumido/expirado, mas sessão existente está ativa e válida! Concluindo com sucesso.');
-      currentLogin = null;
-      const acc = getHiggsfieldAccount();
-      broadcastEvent('higgsfield', acc);
-      return acc;
-    }
-    throw lastError || new Error('Não foi possível validar o código de autorização.');
+    throw new Error('Não foi possível obter o token de acesso do Higgsfield.');
   }
 
   const accessToken = tokenRes.data.access_token;
@@ -1153,34 +1266,68 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
     console.warn(`[Higgsfield OAuth] Erro ao buscar userinfo:`, e.message);
   }
 
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-  cfg.connected = true;
-  cfg.status = 'active';
-  cfg.email = userEmail || cfg.email || 'sirilisworks3@gmail.com';
-  cfg.userId = userId || cfg.userId;
-  cfg.token = accessToken;
-  cfg.refreshToken = refreshToken || cfg.refreshToken;
-
   console.log('[Higgsfield OAuth] Consultando saldo real na API do Higgsfield...');
-  const bal = await fetchRealHiggsfieldBalance(cfg);
-  if (bal && bal.credits !== undefined) {
-    cfg.credits = bal.credits;
-    if (bal.plan) cfg.plan = bal.plan;
-    if (bal.workspaceId) cfg.workspaceId = bal.workspaceId;
-    console.log(`[Higgsfield OAuth] Saldo real identificado com sucesso: ${cfg.credits} créditos (${cfg.plan})`);
+  const tempCfg = { token: accessToken, refreshToken, workspaceId: '' };
+  const bal = await fetchRealHiggsfieldBalance(tempCfg);
+  const credits = (bal && bal.credits !== undefined) ? bal.credits : 0;
+  const plan = (bal && bal.plan) ? bal.plan : 'free';
+  const workspaceId = (bal && bal.workspaceId) ? bal.workspaceId : tempCfg.workspaceId || '';
+
+  console.log(`[Higgsfield OAuth] Saldo identificado: ${credits} créditos (${plan}) para ${userEmail}`);
+
+  const isOwner = userEmail.toLowerCase() === 'sirilisworks3@gmail.com';
+  const role = isOwner ? 'admin' : 'student';
+
+  const userObj = {
+    id: userId || 'user_' + Date.now(),
+    email: userEmail,
+    name: userEmail ? userEmail.split('@')[0] : 'Usuário',
+    role: role
+  };
+
+  const hfObj = {
+    mode: 'own',
+    connected: true,
+    status: 'active',
+    credits: credits,
+    available: credits,
+    email: userEmail,
+    plan: plan,
+    checkedAt: new Date().toISOString(),
+    token: accessToken,
+    refreshToken: refreshToken,
+    workspaceId: workspaceId
+  };
+
+  const newSession = createSession(userObj, hfObj);
+
+  if (res && res.setHeader) {
+    setSessionCookie(res, newSession);
   }
 
-  cfg.checkedAt = new Date().toISOString();
-  writeJson(CONFIG_FILE, cfg);
-  syncLocalCliCredentials(cfg);
+  // Se for o dono conectando, sincroniza no config.json do servidor
+  if (isOwner) {
+    const ownerCfg = {
+      connected: true,
+      status: 'active',
+      email: userEmail,
+      userId: userId,
+      token: accessToken,
+      refreshToken: refreshToken,
+      workspaceId: workspaceId,
+      credits: credits,
+      plan: plan,
+      checkedAt: new Date().toISOString()
+    };
+    writeJson(CONFIG_FILE, ownerCfg);
+    syncLocalCliCredentials(ownerCfg);
+  }
 
   currentLogin = null;
-  const acc = getHiggsfieldAccount();
-  broadcastEvent('higgsfield', acc);
-  return acc;
+  return hfObj;
 }
 
-async function connectWithHiggsfieldToken(accessToken) {
+async function connectWithHiggsfieldToken(accessToken, req, res) {
   let userEmail = '';
   let userId = '';
 
@@ -1195,31 +1342,62 @@ async function connectWithHiggsfieldToken(accessToken) {
     console.warn('[Token] Erro ao buscar userinfo:', e.message);
   }
 
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-  cfg.connected = true;
-  cfg.status = 'active';
-  cfg.email = userEmail || cfg.email || 'sirilisworks3@gmail.com';
-  cfg.userId = userId || cfg.userId;
-  cfg.token = accessToken;
+  const tempCfg = { token: accessToken, workspaceId: '' };
+  const bal = await fetchRealHiggsfieldBalance(tempCfg);
+  const credits = (bal && bal.credits !== undefined) ? bal.credits : 0;
+  const plan = (bal && bal.plan) ? bal.plan : 'free';
+  const workspaceId = (bal && bal.workspaceId) ? bal.workspaceId : tempCfg.workspaceId || '';
 
-  const bal = await fetchRealHiggsfieldBalance(cfg);
-  if (bal && bal.credits !== undefined) {
-    cfg.credits = bal.credits;
-    if (bal.plan) cfg.plan = bal.plan;
-    if (bal.workspaceId) cfg.workspaceId = bal.workspaceId;
+  const isOwner = userEmail.toLowerCase() === 'sirilisworks3@gmail.com';
+  const role = isOwner ? 'admin' : 'student';
+
+  const userObj = {
+    id: userId || 'user_' + Date.now(),
+    email: userEmail,
+    name: userEmail ? userEmail.split('@')[0] : 'Usuário',
+    role: role
+  };
+
+  const hfObj = {
+    mode: 'own',
+    connected: true,
+    status: 'active',
+    credits: credits,
+    available: credits,
+    email: userEmail,
+    plan: plan,
+    checkedAt: new Date().toISOString(),
+    token: accessToken,
+    workspaceId: workspaceId
+  };
+
+  const newSession = createSession(userObj, hfObj);
+
+  if (res && res.setHeader) {
+    setSessionCookie(res, newSession);
   }
 
-  cfg.checkedAt = new Date().toISOString();
-  writeJson(CONFIG_FILE, cfg);
-  syncLocalCliCredentials(cfg);
+  if (isOwner) {
+    const ownerCfg = {
+      connected: true,
+      status: 'active',
+      email: userEmail,
+      userId: userId,
+      token: accessToken,
+      workspaceId: workspaceId,
+      credits: credits,
+      plan: plan,
+      checkedAt: new Date().toISOString()
+    };
+    writeJson(CONFIG_FILE, ownerCfg);
+    syncLocalCliCredentials(ownerCfg);
+  }
 
   currentLogin = null;
-  const acc = getHiggsfieldAccount();
-  broadcastEvent('higgsfield', acc);
-  return acc;
+  return hfObj;
 }
 
-// Rota de callback web (Vercel e navegador)
+// Rota de callback web (navegador direto)
 app.get(['/api/auth/callback', '/callback', '/api/callback'], async (req, res) => {
   const authCode = req.query.code;
   const state = req.query.state;
@@ -1228,7 +1406,7 @@ app.get(['/api/auth/callback', '/callback', '/api/callback'], async (req, res) =
   }
   try {
     const session = getPkceSession(state);
-    const acc = await exchangeCodeForHiggsfieldAccount(authCode, session?.verifier, session?.redirectUri, state);
+    const acc = await exchangeCodeForHiggsfieldAccount(authCode, session?.verifier, session?.redirectUri, state, req, res);
     res.redirect('/app/#/config?connected=true&credits=' + (acc.credits ?? ''));
   } catch (err) {
     console.error('[Web Callback Error]:', err.message);
@@ -1236,10 +1414,11 @@ app.get(['/api/auth/callback', '/callback', '/api/callback'], async (req, res) =
   }
 });
 
+// Callback padrão de colar o endereço manual
 app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/callback'], async (req, res) => {
   const loginId = req.params.id;
   const loginSession = getPkceSession(loginId) || currentLogin;
-  const { url, cookie, token, email } = req.body;
+  const { url, token } = req.body;
   console.log(`[Higgsfield OAuth] Callback recebido para ${loginId}:`, { url: url ? url.slice(0, 100) : null, hasToken: !!token });
 
   try {
@@ -1248,22 +1427,18 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
     // 1. Se passou token diretamente (oat_... ou ey...)
     if (rawInput.startsWith('oat_') || rawInput.startsWith('ey') || (token && (token.startsWith('oat_') || token.startsWith('ey')))) {
       const tok = (rawInput.startsWith('oat_') || rawInput.startsWith('ey')) ? rawInput : token;
-      const acc = await connectWithHiggsfieldToken(tok);
+      const acc = await connectWithHiggsfieldToken(tok, req, res);
       return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
     }
 
     // 2. Extrai o código de autorização e state da URL
     let authCode = null;
     let authState = null;
-    let detectedRedirect = null;
     if (rawInput) {
       try {
         const parsed = new URL(rawInput.startsWith('http') ? rawInput : `http://${rawInput}`);
         authCode = parsed.searchParams.get('code');
         authState = parsed.searchParams.get('state');
-        if (parsed.pathname === '/callback') {
-          detectedRedirect = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
-        }
       } catch (e) {
         const m = rawInput.match(/[?&]code=([a-zA-Z0-9_\-]+)/);
         if (m) authCode = m[1];
@@ -1272,100 +1447,104 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
       }
     }
 
-    if (authCode) {
-      const fromState = extractPkceFromState(authState);
-      const session = getPkceSession(authState) || loginSession;
-      let verifier = fromState?.verifier || session?.verifier;
-      const redirectUri = fromState?.redirectUri || detectedRedirect || session?.redirectUri || 'http://localhost:8765/callback';
-      const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, authState);
-      return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
+    if (!authCode) {
+      return res.status(400).json({
+        error: 'Código de autorização não encontrado no endereço colado. Por favor, copie o endereço completo do navegador após a autorização.'
+      });
     }
 
-    // 3. Se não tem código nem token: verifica se sessão ativa existe
-    const activeToken = await ensureValidHiggsfieldToken();
-    if (activeToken) {
-      const acc = getHiggsfieldAccount();
-      return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
-    }
+    const fromState = extractPkceFromState(authState);
+    const session = getPkceSession(authState) || loginSession;
+    let verifier = fromState?.verifier || session?.verifier || currentLogin?.verifier;
+    const redirectUri = fromState?.redirectUri || session?.redirectUri || 'http://localhost:8765/callback';
 
-    return res.status(400).json({
-      error: 'Código de autorização não encontrado no endereço colado.'
-    });
+    const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, authState, req, res);
+    return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
 
   } catch (err) {
     console.error(`[Higgsfield OAuth] Erro no callback:`, err.response?.data || err.message);
-    const activeToken = await ensureValidHiggsfieldToken();
-    if (activeToken) {
-      const acc = getHiggsfieldAccount();
-      return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
-    }
     const msg = err.response?.data?.error_description || err.response?.data?.error || err.message;
     return res.status(400).json({
-      error: `Não foi possível conectar com o Higgsfield: ${msg}. Tente abrir o login novamente.`
+      error: `Não foi possível conectar com o Higgsfield: ${msg}. Por favor, clique em Reiniciar login e tente novamente.`
     });
   }
 });
 
 app.post(['/api/higgsfield/connect/:id/cancel', '/api/auth/higgsfield/:id/cancel'], (req, res) => {
   currentLogin = null;
-  const acc = getHiggsfieldAccount();
-  broadcastEvent('higgsfield', acc);
+  const acc = getHiggsfieldAccount(req);
   res.json(acc);
 });
 
 app.post('/api/higgsfield/refresh', async (req, res) => {
-  const cfg = readJson(CONFIG_FILE, DEFAULT_CONFIG);
+  const session = getSession(req);
+  if (!session || !session.higgsfield || !session.higgsfield.connected) {
+    return res.status(401).json({ error: 'Nenhuma conta Higgsfield conectada' });
+  }
+
+  const hf = session.higgsfield;
   const { credits, token } = req.body || {};
 
   if (credits !== undefined && credits !== null && !isNaN(Number(credits))) {
-    cfg.credits = Number(credits);
-    console.log(`[Higgsfield Saldo] Saldo atualizado manualmente para ${cfg.credits} créditos`);
+    hf.credits = Number(credits);
+    hf.available = Number(credits);
+    console.log(`[Higgsfield Saldo] Saldo ajustado para ${hf.credits} créditos`);
   } else {
-    if (token) cfg.token = token;
-    console.log('[Higgsfield Saldo] Consultando saldo oficial no Higgsfield...');
-    const bal = await fetchRealHiggsfieldBalance(cfg);
+    if (token) hf.token = token;
+    console.log(`[Higgsfield Saldo] Consultando saldo oficial para ${hf.email}...`);
+    const bal = await fetchRealHiggsfieldBalance(hf);
     if (bal && bal.credits !== undefined) {
-      cfg.credits = bal.credits;
-      if (bal.plan) cfg.plan = bal.plan;
-      if (bal.workspaceId) cfg.workspaceId = bal.workspaceId;
-      cfg.status = 'active';
-      console.log(`[Higgsfield Saldo] Saldo oficial sincronizado: ${cfg.credits} créditos (${cfg.plan})`);
+      hf.credits = bal.credits;
+      hf.available = bal.credits;
+      if (bal.plan) hf.plan = bal.plan;
+      if (bal.workspaceId) hf.workspaceId = bal.workspaceId;
+      hf.status = 'active';
+      console.log(`[Higgsfield Saldo] Saldo oficial sincronizado: ${hf.credits} créditos (${hf.plan})`);
     } else {
       console.warn('[Higgsfield Saldo] Não foi possível obter o saldo da API.');
     }
   }
 
-  cfg.checkedAt = new Date().toISOString();
-  writeJson(CONFIG_FILE, cfg);
-  syncLocalCliCredentials(cfg);
-  const acc = getHiggsfieldAccount();
-  broadcastEvent('higgsfield', acc);
-  res.json(acc);
+  hf.checkedAt = new Date().toISOString();
+  session.higgsfield = hf;
+  setSessionCookie(res, session);
+
+  if (session.user.role === 'admin') {
+    writeJson(CONFIG_FILE, { ...readJson(CONFIG_FILE, {}), credits: hf.credits, plan: hf.plan, checkedAt: hf.checkedAt });
+  }
+
+  res.json(hf);
 });
 
 app.post('/api/higgsfield/disconnect', (req, res) => {
-  const cfg = readJson(CONFIG_FILE, {});
-  cfg.connected = false;
-  cfg.cookie = '';
-  cfg.token = '';
-  cfg.refreshToken = '';
-  cfg.email = '';
-  cfg.credits = 0;
-  writeJson(CONFIG_FILE, cfg);
-  currentLogin = null;
-  const acc = getHiggsfieldAccount();
-  broadcastEvent('higgsfield', acc);
-  res.json(acc);
+  const session = getSession(req);
+  if (session && session.higgsfield) {
+    session.higgsfield.connected = false;
+    session.higgsfield.status = 'idle';
+    session.higgsfield.token = '';
+    session.higgsfield.refreshToken = '';
+    session.higgsfield.email = '';
+    session.higgsfield.credits = 0;
+    session.higgsfield.available = 0;
+    setSessionCookie(res, session);
+    return res.json(session.higgsfield);
+  }
+  res.json({ mode: 'own', connected: false, status: 'idle', credits: 0, available: 0, email: '', plan: '' });
+});
+
+// Deslogar sessão
+app.post('/api/auth/logout', (req, res) => {
+  clearSessionCookie(res);
+  res.json({ success: true });
 });
 
 // Admin endpoints para gestão centralizada
 app.get('/api/admin/overview', (req, res) => {
-  const cfg = readJson(CONFIG_FILE, {});
-  const acc = getHiggsfieldAccount();
+  const ownerConfig = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
   res.json({
     users_count: 1,
     takes_today: 0,
-    credits_today: acc.credits,
+    credits_today: ownerConfig.credits,
     charged_credits_today: 0,
     queue: {
       slots_free: 4,
@@ -1378,11 +1557,11 @@ app.get('/api/admin/overview', (req, res) => {
     accounts: [
       {
         id: 'acc_main',
-        label: acc.email || 'Conta Higgsfield Principal',
-        status: acc.connected ? 'active' : 'disabled',
-        has_credentials: !!(cfg.token || cfg.cookie || cfg.apiKey),
-        credits_balance: acc.credits,
-        credits_checked_at: acc.checkedAt,
+        label: ownerConfig.email || 'Conta Higgsfield Principal',
+        status: ownerConfig.connected ? 'active' : 'disabled',
+        has_credentials: !!(ownerConfig.token || ownerConfig.refreshToken),
+        credits_balance: ownerConfig.credits,
+        credits_checked_at: ownerConfig.checkedAt,
         active_parts: 0,
         max_slots: 4,
         min_credits: 60,
@@ -1401,8 +1580,8 @@ app.patch('/api/admin/accounts/:id', (req, res) => {
 });
 
 app.post('/api/admin/accounts/:id/refresh', (req, res) => {
-  const acc = getHiggsfieldAccount();
-  res.json({ ok: true, account: { credits_balance: acc.credits } });
+  const ownerConfig = readJson(CONFIG_FILE, DEFAULT_OWNER_CONFIG);
+  res.json({ ok: true, account: { credits_balance: ownerConfig.credits } });
 });
 
 app.post('/api/admin/accounts/:id/credentials', (req, res) => {
@@ -1546,7 +1725,6 @@ app.post('/api/characters/:id/views', (req, res) => {
   const char = characters.find(c => c.id === charId);
   if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
 
-  // Cria as 3 vistas de referência: frente, perfil, 3/4 direita
   const baseImg = char.images[0] || { url: '/landing/assets/vector-1.webp' };
   const viewRoles = [
     { role: 'front', label: 'Frente' },
@@ -1572,95 +1750,6 @@ app.post('/api/characters/:id/views', (req, res) => {
   res.json(char);
 });
 
-app.post('/api/auth/logout', (req, res) => {
-  const cfg = readJson(CONFIG_FILE, {});
-  cfg.connected = false;
-  writeJson(CONFIG_FILE, cfg);
-  res.json({ success: true });
-});
-
-// Servidor OAuth Callback para Higgsfield (Portas 8765 e 3334)
-const http = require('http');
-
-function startHiggsfieldCallbackServer(port = 8765) {
-  const callbackServer = http.createServer(async (req, res) => {
-    try {
-      const reqUrl = new URL(req.url, `http://localhost:${port}`);
-      if (reqUrl.pathname === '/callback') {
-        const authCode = reqUrl.searchParams.get('code');
-        const state = reqUrl.searchParams.get('state');
-        console.log(`[OAuth Listener ${port}] Callback recebido via navegador! code: ${authCode ? 'PRESENTE' : 'AUSENTE'}`);
-
-        if (!authCode) {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          return res.end('<h2>Código de autorização não recebido</h2><p>Tente novamente.</p>');
-        }
-
-        const fromState = extractPkceFromState(state);
-        const session = getPkceSession(state) || currentLogin;
-        const verifier = fromState?.verifier || session?.verifier;
-        const redirectUri = fromState?.redirectUri || session?.redirectUri || `http://localhost:${port}/callback`;
-
-        try {
-          const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, state);
-
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          return res.end(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <meta charset="utf-8">
-              <title>Higgsfield Conectado</title>
-              <style>
-                body { font-family: system-ui, -apple-system, sans-serif; background: #0c0d0e; color: #f3f4f6; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-                .card { background: #16181a; border: 1px solid #272a30; border-radius: 12px; padding: 32px; text-align: center; max-width: 440px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
-                h2 { color: #10b981; margin: 0 0 12px; }
-                p { color: #9ca3af; font-size: 14px; line-height: 1.6; margin: 0 0 20px; }
-                .badge { display: inline-block; background: #1e293b; color: #38bdf8; padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
-                .btn { display: inline-block; background: #fbbf24; color: #000; font-weight: 600; padding: 10px 24px; border-radius: 8px; text-decoration: none; cursor: pointer; border: none; font-size: 14px; }
-              </style>
-            </head>
-            <body>
-              <div class="card">
-                <div style="font-size: 48px; margin-bottom: 12px;">⚡</div>
-                <h2>Conta Conectada!</h2>
-                <div class="badge">${acc.email || 'Conectado'} · ${acc.credits} créditos</div>
-                <p>Sua conta do Higgsfield foi conectada em tempo real ao Character.<br>Esta janela será fechada automaticamente.</p>
-                <button class="btn" onclick="window.close()">Fechar Janela</button>
-              </div>
-              <script>
-                setTimeout(() => { try { window.close(); } catch(e){} }, 2000);
-              </script>
-            </body>
-            </html>
-          `);
-        } catch (authErr) {
-          console.error(`[OAuth Listener ${port}] Erro na troca:`, authErr.response?.data || authErr.message);
-          res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-          return res.end(`<h2>Erro na conexão com Higgsfield</h2><p>${authErr.response?.data?.error_description || authErr.message}</p>`);
-        }
-      }
-      res.writeHead(404);
-      res.end('Not Found');
-    } catch (e) {
-      res.writeHead(500);
-      res.end(e.message);
-    }
-  });
-
-  callbackServer.listen(port, '0.0.0.0', () => {
-    console.log(`⚡ Listener OAuth Higgsfield ativo em http://127.0.0.1:${port}/callback`);
-  });
-
-  callbackServer.on('error', err => {
-    if (err.code === 'EADDRINUSE') {
-      console.warn(`Porta ${port} já em uso para OAuth callback.`);
-    } else {
-      console.error(`Erro no listener OAuth ${port}:`, err);
-    }
-  });
-}
-
 // Inicialização com fallback de portas
 function startServer(port) {
   const server = app.listen(port, () => {
@@ -1669,6 +1758,7 @@ function startServer(port) {
     console.log(`   http://localhost:${port}`);
     console.log(`   (Landing Page: http://localhost:${port})`);
     console.log(`   (Aplicativo Estúdio: http://localhost:${port}/app)`);
+    console.log(`   (Acesso Dono direto: http://localhost:${port}/app?owner=1)`);
     console.log(`=======================================================`);
   });
 
@@ -1680,8 +1770,6 @@ function startServer(port) {
       console.error('Erro no servidor:', err);
     }
   });
-
-  // Sem listener de loopback local para permitir o fluxo idêntico ao site original (copiar e colar a URL após autorização)
 }
 
 if (require.main === module) {
@@ -1689,4 +1777,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-
