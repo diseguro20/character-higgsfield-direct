@@ -3,8 +3,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const cliPackage = path.dirname(require.resolve('@higgsfield/cli/package.json'));
-const binary = path.join(cliPackage, 'vendor', process.platform === 'win32' ? 'hf.exe' : 'hf');
+const binary = process.env.VERCEL
+  ? path.join(__dirname, 'vendor', 'hf')
+  : path.join(path.dirname(require.resolve('@higgsfield/cli/package.json')), 'vendor', process.platform === 'win32' ? 'hf.exe' : 'hf');
 
 async function invoke(args, session, media = []) {
   const hf = session?.higgsfield;

@@ -2,7 +2,7 @@
   "cleanUrls": false,
   "buildCommand": "node scripts/vercel-build.js",
   "functions": {
-    "api/index.js": { "maxDuration": 300, "includeFiles": "node_modules/@higgsfield/cli/vendor/**" }
+    "api/index.js": { "maxDuration": 300, "includeFiles": "vendor/**" }
   },
   "rewrites": [
     {
