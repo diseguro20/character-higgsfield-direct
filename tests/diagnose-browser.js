@@ -64,6 +64,17 @@ server.listen(0, '127.0.0.1', async () => {
       await send('DOM.setFileInputFiles', { nodeId: found.result.nodeId, files: [filename] });
       await new Promise(resolve => setTimeout(resolve, 22000));
     }
+    if (process.argv.includes('--select-two')) {
+      const chosen = await send('Runtime.evaluate', { expression: `new Promise(resolve => {
+        const cards = [...document.querySelectorAll('button.char:not(.char--new)')];
+        if (cards.length < 2) return resolve('fewer than two character cards');
+        cards[0].click(); setTimeout(() => { cards[1].click(); setTimeout(() => {
+          document.querySelector('div.clip')?.click();
+          setTimeout(() => resolve(document.body.innerText.slice(-850)), 7000);
+        }, 300); }, 300);
+      })`, awaitPromise: true, returnByValue: true });
+      console.log('Two-character UI:', chosen.result?.result?.value);
+    }
     const state = await send('Runtime.evaluate', { expression: 'JSON.stringify({title:document.title,appLength:document.querySelector("#app")?.innerHTML.length,body:document.body.innerText.slice(0,200)})', returnByValue: true });
     console.log('State:', state.result?.result?.value);
     for (const error of errors.slice(0, 12)) console.log(error.slice(0, 1000));
