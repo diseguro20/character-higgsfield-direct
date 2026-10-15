@@ -6,6 +6,10 @@
       "destination": "/api"
     },
     {
+      "source": "/uploads/(.*)",
+      "destination": "/api"
+    },
+    {
       "source": "/app",
       "destination": "/app/index.html"
     }

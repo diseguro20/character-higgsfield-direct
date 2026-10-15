@@ -442,8 +442,8 @@ export function CharacterDetail({ id, onClose }) {
   const refsOn = c.images.filter(i => i.useAsRef).length
   // a última referência marcada não desmarca (o servidor recusa: o personagem precisa de pelo menos uma)
   const lastRef = img => refsOn === 1 && !!img.useAsRef
-  // Character Online: foto enviada pelo aluno só com o recurso ligado pelo admin (Configurações > Recursos)
-  const canUpload = !c.library && (isAdmin() || S.me?.features?.user_photo_characters === true)
+  // Upload de fotos liberado para todos os personagens próprios
+  const canUpload = !c.library
   // Character Online: vistas para vídeo (frente, perfil e 3/4 direita) a partir do card, só as que faltam, com o preço
   // no botão e a pergunta antes; com as três o botão some
   const missing = missingViews(c)
@@ -587,6 +587,21 @@ export function Characters() {
     if (p) { setCur(p.id); setEditing(true); toast('Pasta criada. Clique nos personagens para colocar nela.', 'ok', 6000) }
   }
   const empty = cur && !editing && !qq ? Math.max(0, (cur.target || 0) - cur.characterIds.length) : 0
+  const quickPhotoRef = useRef(null)
+  const handleQuickPhoto = async files => {
+    const list = [...files].filter(isImage)
+    if (!list.length) return
+    const first = list[0]
+    const baseName = first.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ')
+    const charName = baseName.charAt(0).toUpperCase() + baseName.slice(1)
+    const newChar = await run(() => api.post('/api/characters', { name: charName || 'Novo Personagem' }))
+    if (!newChar) return
+    if (cur) run(() => api.patch(`/api/projects/${cur.id}`, { add: [newChar.id] }))
+    await uploadCharacterImages(newChar.id, list)
+    setDetail(newChar.id)
+    toast('Personagem criado com foto!', 'ok')
+  }
+
   // Character Online: opções do card geradas e ainda não salvas (o criador mostra de novo, para salvar)
   const unsaved = unsavedImageJobs().reduce((k, j) => k + unsavedOptions(j), 0)
   return html`
@@ -595,6 +610,8 @@ export function Characters() {
         <h1 class="display page__title">Personagens <em>${cur && !editing ? cur.characterIds.length : S.characters.length}</em></h1>
         <label class="search" style="max-width:320px"><input class="input" placeholder="Buscar" value=${q} onInput=${e => setQ(e.target.value)} /></label>
         <span class="grow"></span>
+        <input ref=${quickPhotoRef} type="file" accept="image/*" multiple hidden onChange=${e => { handleQuickPhoto(e.target.files); e.target.value = '' }} />
+        <button class="btn btn--butter" onClick=${() => quickPhotoRef.current?.click()} title="Criar personagem diretamente enviando uma foto">📷 Criar com foto</button>
         ${unsaved ? html`<button class="btn btn--butter" title="Opções do card que você gerou e ainda não salvou" onClick=${() => setCreating(true)}>${unsaved === 1 ? '1 opção não salva' : `${unsaved} opções não salvas`}</button>` : null}
         <button class="btn btn--primary" onClick=${() => setCreating(true)}>+ Criar personagem</button>
       </div>

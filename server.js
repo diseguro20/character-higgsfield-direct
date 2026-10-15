@@ -31,6 +31,7 @@ const CHARACTERS_FILE = path.join(DATA_DIR, 'characters.json');
 const CLIPS_FILE = path.join(DATA_DIR, 'clips.json');
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -65,6 +66,17 @@ const DEFAULT_OWNER_CONFIG = {
 };
 
 let memoryCache = {};
+const uploadedFilesBufferMap = new Map();
+
+function saveUploadedBuffer(name, buffer, mime) {
+  uploadedFilesBufferMap.set(name, { buffer, mime });
+  const filePath = path.join(UPLOADS_DIR, name);
+  try {
+    fs.writeFileSync(filePath, buffer);
+  } catch (e) {
+    console.error('Erro ao escrever arquivo em disco:', e.message);
+  }
+}
 
 function readJson(file, fallback = []) {
   const baseName = path.basename(file);
@@ -168,6 +180,7 @@ function verifySession(token) {
 const activeSessions = new Map();
 
 function getSession(req) {
+  if (req.session) return req.session;
   const cookies = parseCookies(req);
   const token = cookies['character_session'] || req.headers['x-character-session'];
   if (!token) return null;
@@ -233,6 +246,7 @@ app.use((req, res, next) => {
       }
     );
     setSessionCookie(res, ownerSession);
+    req.session = ownerSession;
     if (req.path === '/app' || req.path === '/app/') {
       return res.redirect('/app');
     }
@@ -280,6 +294,21 @@ function broadcastEvent(type, item) {
 app.use('/landing', express.static(path.join(SITE_DIR, 'landing')));
 app.use('/app', express.static(path.join(SITE_DIR, 'app')));
 app.use('/uploads', express.static(UPLOADS_DIR));
+app.use('/api/uploads', express.static(UPLOADS_DIR));
+
+app.get(['/uploads/:name', '/api/uploads/:name'], (req, res) => {
+  const fileName = req.params.name;
+  if (uploadedFilesBufferMap.has(fileName)) {
+    const item = uploadedFilesBufferMap.get(fileName);
+    res.setHeader('Content-Type', item.mime || 'application/octet-stream');
+    return res.send(item.buffer);
+  }
+  const filePath = path.join(UPLOADS_DIR, fileName);
+  if (fs.existsSync(filePath)) {
+    return res.sendFile(filePath);
+  }
+  res.status(404).send('Arquivo não encontrado');
+});
 
 // Rota raiz: serve a landing page original
 app.get('/', (req, res) => {
@@ -373,7 +402,8 @@ app.get('/api/state', (req, res) => {
         minDuration: 4
       },
       features: {
-        email_login: false
+        email_login: false,
+        user_photo_characters: true
       },
       higgsfield: hf,
       paywall: {
@@ -494,7 +524,7 @@ app.get('/api/state', (req, res) => {
       { id: 'hfcli', label: 'Higgsfield', configured: true }
     ],
     characters: userCharacters,
-    projects: [],
+    projects: readJson(PROJECTS_FILE, []),
     clips: userClips,
     jobs: userJobs,
     templates: {
@@ -520,6 +550,10 @@ app.get('/api/me', (req, res) => {
     wallet: { balance_credits: hf.credits || 0, reserved_credits: 0 },
     pricing: { credits_per_second: 11, min_seconds: 4, character_credits: 60, character_image_credits: 15 },
     limits: { max_upload_mb: 350, maxClipSeconds: 60, maxDuration: 29.7, minDuration: 4 },
+    features: {
+      email_login: false,
+      user_photo_characters: true
+    },
     higgsfield: hf,
     paywall: { locked: false, free_videos: 99999, free_left: 99999, price_label: 'Grátis' }
   });
@@ -698,7 +732,68 @@ app.post('/api/downloads', (req, res) => {
   });
 });
 
-// 6. PERSONAGENS E FOTOS DE REFERÊNCIA
+// 6. UPLOADS E IMAGENS DE REFERÊNCIA
+app.post('/api/uploads', (req, res) => {
+  try {
+    const rawName = req.query.name || `upload_${Date.now()}.jpg`;
+    const ext = path.extname(rawName).toLowerCase().replace('.', '') || 'jpeg';
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const safeName = `up_${Date.now()}_${path.basename(rawName)}`;
+
+    let base64 = null;
+    if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+      saveUploadedBuffer(safeName, req.body, mime);
+      base64 = `data:${mime};base64,${req.body.toString('base64')}`;
+    }
+
+    const url = base64 || `/uploads/${safeName}`;
+    res.json({
+      path: `/uploads/${safeName}`,
+      url: url
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/reference-images', (req, res) => {
+  try {
+    const rawName = req.query.name || `ref_${Date.now()}.jpg`;
+    const ext = path.extname(rawName).toLowerCase().replace('.', '') || 'jpeg';
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const safeName = `ref_${Date.now()}_${path.basename(rawName)}`;
+
+    let base64 = null;
+    if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+      saveUploadedBuffer(safeName, req.body, mime);
+      base64 = `data:${mime};base64,${req.body.toString('base64')}`;
+    }
+
+    const url = base64 || `/uploads/${safeName}`;
+    const refObj = {
+      id: `ref_${Date.now()}`,
+      url: url,
+      thumbUrl: url,
+      name: rawName
+    };
+
+    const session = getSession(req);
+    if (session) {
+      if (!session.referenceImages) session.referenceImages = [];
+      session.referenceImages.push(refObj);
+    }
+
+    res.json({ reference: refObj });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/reference-images/:id', (req, res) => {
+  res.json({ ok: true });
+});
+
+// PERSONAGENS (CRUD COMPLETO)
 app.post('/api/characters', (req, res) => {
   const session = getSession(req);
   const userId = session?.user?.id || 'anonymous';
@@ -708,8 +803,10 @@ app.post('/api/characters', (req, res) => {
     userId,
     name: req.body?.name || 'Novo Personagem',
     code: `CS${String(characters.length + 1).padStart(3, '0')}`,
-    images: [],
-    cover: null,
+    identityEn: req.body?.identityEn || '',
+    description: req.body?.description || '',
+    images: req.body?.images || [],
+    cover: req.body?.cover || null,
     favorite: false,
     library: false,
     createdAt: new Date().toISOString()
@@ -720,7 +817,33 @@ app.post('/api/characters', (req, res) => {
   res.json(newChar);
 });
 
-// Upload de imagens no personagem (frente, perfil, 3/4)
+app.patch('/api/characters/:id', (req, res) => {
+  const id = req.params.id;
+  const characters = readJson(CHARACTERS_FILE, []);
+  const char = characters.find(c => c.id === id);
+  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+
+  if (req.body.name !== undefined) char.name = req.body.name;
+  if (req.body.identityEn !== undefined) char.identityEn = req.body.identityEn;
+  if (req.body.description !== undefined) char.description = req.body.description;
+  if (req.body.cover !== undefined) char.cover = req.body.cover;
+  if (req.body.favorite !== undefined) char.favorite = req.body.favorite;
+
+  writeJson(CHARACTERS_FILE, characters);
+  broadcastEvent('character', char);
+  res.json(char);
+});
+
+app.delete('/api/characters/:id', (req, res) => {
+  const id = req.params.id;
+  let characters = readJson(CHARACTERS_FILE, []);
+  characters = characters.filter(c => c.id !== id);
+  writeJson(CHARACTERS_FILE, characters);
+  broadcastEvent('character:removed', { id });
+  res.json({ ok: true });
+});
+
+// Upload de fotos/imagens do personagem
 app.post('/api/characters/:id/images', (req, res) => {
   const charId = req.params.id;
   const characters = readJson(CHARACTERS_FILE, []);
@@ -728,15 +851,23 @@ app.post('/api/characters/:id/images', (req, res) => {
   if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
 
   const rawName = req.query.name || `photo_${Date.now()}.jpg`;
+  const ext = path.extname(rawName).toLowerCase().replace('.', '') || 'jpeg';
+  const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
   const safeName = `ref_${Date.now()}_${path.basename(rawName)}`;
-  const filePath = path.join(UPLOADS_DIR, safeName);
 
-  fs.writeFileSync(filePath, req.body);
+  let base64 = null;
+  if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+    saveUploadedBuffer(safeName, req.body, mime);
+    base64 = `data:${mime};base64,${req.body.toString('base64')}`;
+  }
+
+  const url = `/uploads/${safeName}`;
+  const thumbUrl = base64 || url;
 
   const imgObj = {
-    id: `img_${Date.now()}`,
-    url: `/uploads/${safeName}`,
-    thumbUrl: `/uploads/${safeName}`,
+    id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    url: base64 || url,
+    thumbUrl: thumbUrl,
     role: char.images.length === 0 ? 'card' : char.images.length === 1 ? 'front' : char.images.length === 2 ? 'profile' : 'right',
     label: char.images.length === 0 ? 'Card' : char.images.length === 1 ? 'Frente' : char.images.length === 2 ? 'Perfil' : '3/4',
     useAsRef: true
@@ -748,6 +879,242 @@ app.post('/api/characters/:id/images', (req, res) => {
   writeJson(CHARACTERS_FILE, characters);
   broadcastEvent('character', char);
   res.json(char);
+});
+
+app.patch('/api/characters/:id/images/:imgId', (req, res) => {
+  const { id, imgId } = req.params;
+  const characters = readJson(CHARACTERS_FILE, []);
+  const char = characters.find(c => c.id === id);
+  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  const img = char.images.find(i => i.id === imgId);
+  if (img) {
+    Object.assign(img, req.body);
+    writeJson(CHARACTERS_FILE, characters);
+    broadcastEvent('character', char);
+  }
+  res.json(char);
+});
+
+app.delete('/api/characters/:id/images/:imgId', (req, res) => {
+  const { id, imgId } = req.params;
+  const characters = readJson(CHARACTERS_FILE, []);
+  const char = characters.find(c => c.id === id);
+  if (!char) return res.status(404).json({ error: 'Personagem não encontrado' });
+  char.images = char.images.filter(i => i.id !== imgId);
+  if (char.cover === imgId) {
+    char.cover = char.images[0]?.id || null;
+  }
+  writeJson(CHARACTERS_FILE, characters);
+  broadcastEvent('character', char);
+  res.json(char);
+});
+
+app.post('/api/characters/:id/images/:imgId/upscale', (req, res) => {
+  res.json({ ok: true, status: 'queued' });
+});
+
+// GERAÇÃO DE OPÇÕES DE IMAGEM & SALVAMENTO
+app.post('/api/images', async (req, res) => {
+  try {
+    const session = getSession(req);
+    const userId = session?.user?.id || 'anonymous';
+    const { model, prompt, n = 2, opts, title, refs, characterId, referenceIds } = req.body;
+
+    const jobId = `job_img_${Date.now()}`;
+    const generatedUrls = [];
+
+    if (Array.isArray(referenceIds) && referenceIds.length > 0 && session?.referenceImages) {
+      referenceIds.forEach(refId => {
+        const found = session.referenceImages.find(r => r.id === refId);
+        if (found) generatedUrls.push(found.url);
+      });
+    }
+
+    const characters = readJson(CHARACTERS_FILE, []);
+    while (generatedUrls.length < n) {
+      const fallbackChar = characters[generatedUrls.length % characters.length];
+      const fallbackUrl = fallbackChar?.images?.[0]?.url || '/landing/assets/vector-1.webp';
+      generatedUrls.push(fallbackUrl);
+    }
+
+    const job = {
+      id: jobId,
+      userId,
+      kind: 'image',
+      status: 'done',
+      title: title || `Imagem · ${characterId ? 'Personagem' : 'Novo Personagem'}`,
+      createdAt: new Date().toISOString(),
+      input: {
+        model,
+        prompt,
+        n,
+        opts,
+        characterId,
+        referenceIds
+      },
+      outputs: {
+        imageUrls: generatedUrls.slice(0, n)
+      },
+      savedImages: []
+    };
+
+    const jobs = readJson(JOBS_FILE, []);
+    jobs.unshift(job);
+    writeJson(JOBS_FILE, jobs);
+    broadcastEvent('job', job);
+
+    res.json(job);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/images/save', (req, res) => {
+  try {
+    const { jobId, index = 0, characterId, name, identityEn, makeCover, kind = 'card' } = req.body;
+    const jobs = readJson(JOBS_FILE, []);
+    const job = jobs.find(j => j.id === jobId);
+    if (!job) return res.status(404).json({ error: 'Pedido de imagem não encontrado' });
+
+    if (!job.savedImages) job.savedImages = [];
+    if (!job.savedImages.includes(index)) job.savedImages.push(index);
+    writeJson(JOBS_FILE, jobs);
+    broadcastEvent('job', job);
+
+    const imgUrl = job.outputs?.imageUrls?.[index] || '/landing/assets/vector-1.webp';
+    const characters = readJson(CHARACTERS_FILE, []);
+    let char = characterId ? characters.find(c => c.id === characterId) : null;
+
+    const session = getSession(req);
+    const userId = session?.user?.id || 'anonymous';
+
+    if (!char) {
+      char = {
+        id: `char_${Date.now()}`,
+        userId,
+        name: name || 'Novo Personagem',
+        code: `CS${String(characters.length + 1).padStart(3, '0')}`,
+        identityEn: identityEn || '',
+        description: '',
+        images: [],
+        cover: null,
+        favorite: false,
+        library: false,
+        createdAt: new Date().toISOString()
+      };
+      characters.unshift(char);
+    } else {
+      if (name && name !== 'Novo personagem' && name !== 'Novo Personagem') char.name = name;
+      if (identityEn) char.identityEn = identityEn;
+    }
+
+    const imgObj = {
+      id: `img_${Date.now()}_${index}`,
+      url: imgUrl,
+      thumbUrl: imgUrl,
+      role: kind === 'sheet' ? 'sheet' : kind === 'fullbody' ? 'fullbody' : 'card',
+      label: kind === 'sheet' ? 'Ficha' : kind === 'fullbody' ? 'Corpo inteiro' : 'Card',
+      useAsRef: true
+    };
+
+    char.images.push(imgObj);
+    if (makeCover || !char.cover) char.cover = imgObj.id;
+
+    writeJson(CHARACTERS_FILE, characters);
+    broadcastEvent('character', char);
+    res.json(char);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// JOBS E GERENCIAMENTO DE FILA
+app.delete('/api/jobs/:id', (req, res) => {
+  const id = req.params.id;
+  let jobs = readJson(JOBS_FILE, []);
+  jobs = jobs.filter(j => j.id !== id);
+  writeJson(JOBS_FILE, jobs);
+  broadcastEvent('job:removed', { id });
+  res.json({ ok: true });
+});
+
+app.post('/api/jobs/:id/retry', (req, res) => {
+  const id = req.params.id;
+  const jobs = readJson(JOBS_FILE, []);
+  const job = jobs.find(j => j.id === id);
+  if (!job) return res.status(404).json({ error: 'Job não encontrado' });
+  job.status = 'done';
+  job.error = null;
+  writeJson(JOBS_FILE, jobs);
+  broadcastEvent('job', job);
+  res.json(job);
+});
+
+app.post('/api/jobs/:id/cancel', (req, res) => {
+  const id = req.params.id;
+  const jobs = readJson(JOBS_FILE, []);
+  const job = jobs.find(j => j.id === id);
+  if (!job) return res.status(404).json({ error: 'Job não encontrado' });
+  job.status = 'canceled';
+  writeJson(JOBS_FILE, jobs);
+  broadcastEvent('job', job);
+  res.json(job);
+});
+
+app.patch('/api/jobs/:id', (req, res) => {
+  const id = req.params.id;
+  const jobs = readJson(JOBS_FILE, []);
+  const job = jobs.find(j => j.id === id);
+  if (job) {
+    Object.assign(job, req.body);
+    writeJson(JOBS_FILE, jobs);
+    broadcastEvent('job', job);
+  }
+  res.json(job || {});
+});
+
+app.post('/api/jobs/:id/upscale', (req, res) => {
+  const id = req.params.id;
+  res.json({ ok: true, id, status: 'queued' });
+});
+
+// PASTAS DE PROJETOS
+app.post('/api/projects', (req, res) => {
+  const projects = readJson(PROJECTS_FILE, []);
+  const p = {
+    id: `proj_${Date.now()}`,
+    name: req.body?.name || `Projeto ${projects.length + 1}`,
+    target: req.body?.target || 15,
+    characterIds: []
+  };
+  projects.push(p);
+  writeJson(PROJECTS_FILE, projects);
+  res.json(p);
+});
+
+app.patch('/api/projects/:id', (req, res) => {
+  const id = req.params.id;
+  const projects = readJson(PROJECTS_FILE, []);
+  const p = projects.find(x => x.id === id);
+  if (!p) return res.status(404).json({ error: 'Projeto não encontrado' });
+  if (req.body.name !== undefined) p.name = req.body.name;
+  if (req.body.target !== undefined) p.target = req.body.target;
+  if (Array.isArray(req.body.add)) {
+    req.body.add.forEach(cid => { if (!p.characterIds.includes(cid)) p.characterIds.push(cid); });
+  }
+  if (Array.isArray(req.body.remove)) {
+    p.characterIds = p.characterIds.filter(cid => !req.body.remove.includes(cid));
+  }
+  writeJson(PROJECTS_FILE, projects);
+  res.json(p);
+});
+
+app.delete('/api/projects/:id', (req, res) => {
+  const id = req.params.id;
+  let projects = readJson(PROJECTS_FILE, []);
+  projects = projects.filter(x => x.id !== id);
+  writeJson(PROJECTS_FILE, projects);
+  res.json({ ok: true });
 });
 
 // 7. ORÇAMENTO (ESTIMATE): Calcula os créditos e partes do vídeo
