@@ -835,12 +835,30 @@ function getPkceSession(idOrState) {
   return sessions[idOrState] || Object.values(sessions).find(s => s.state === idOrState || s.id === idOrState) || null;
 }
 
+function extractPkceFromState(state) {
+  if (!state || typeof state !== 'string') return null;
+  if (state.startsWith('hf_ey') || state.startsWith('hf_')) {
+    try {
+      const jsonStr = Buffer.from(state.slice(3), 'base64url').toString('utf8');
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && parsed.v) {
+        return { verifier: parsed.v, redirectUri: parsed.r || 'http://localhost:8765/callback' };
+      }
+    } catch {}
+  }
+  if (state.startsWith('hf_v1_')) {
+    return { verifier: state.slice(6), redirectUri: 'http://localhost:8765/callback' };
+  }
+  return null;
+}
+
 function createHiggsfieldLogin(req) {
   const verifier = base64Url(crypto.randomBytes(32));
   const challenge = base64Url(crypto.createHash('sha256').update(verifier).digest());
-  const state = 'hf_v1_' + verifier;
-  const loginId = `login_${Date.now()}`;
   const redirectUri = 'http://localhost:8765/callback';
+  const statePayload = { v: verifier, r: redirectUri };
+  const state = 'hf_' + Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+  const loginId = `login_${Date.now()}`;
 
   const authorizeUrl = 'https://clerk.higgsfield.ai/oauth/authorize?' + new URLSearchParams({
     client_id: HIGGSFIELD_CLIENT_ID,
@@ -1063,10 +1081,13 @@ app.post(['/api/higgsfield/connect', '/api/auth/higgsfield/connect'], (req, res)
 async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, state) {
   console.log(`[Higgsfield OAuth] Trocando code por access_token real no Clerk...`);
   
-  if (!verifier && state && state.startsWith('hf_v1_')) {
-    verifier = state.slice(6);
-    console.log('[Higgsfield OAuth] Verifier recuperado com sucesso via state!');
+  const fromState = extractPkceFromState(state);
+  if (fromState) {
+    if (!verifier) verifier = fromState.verifier;
+    if (!redirectUri || redirectUri === 'http://localhost:8765/callback') redirectUri = fromState.redirectUri;
+    console.log('[Higgsfield OAuth] Metadados PKCE recuperados do state com sucesso!');
   }
+
   if (!verifier && state) {
     const session = getPkceSession(state);
     if (session) {
@@ -1074,46 +1095,31 @@ async function exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri,
       if (!redirectUri) redirectUri = session.redirectUri;
     }
   }
-  if (!verifier) {
-    const anySession = Object.values(readJson(SESSIONS_FILE, {})).reverse().find(s => s.verifier);
-    if (anySession) {
-      verifier = anySession.verifier;
-      if (!redirectUri) redirectUri = anySession.redirectUri;
-    }
+
+  if (!redirectUri) {
+    redirectUri = 'http://localhost:8765/callback';
   }
 
-  const redirectCandidates = [
-    redirectUri,
-    'http://localhost:8765/callback',
-    'http://127.0.0.1:8765/callback',
-    'http://localhost:3334/callback',
-    'http://127.0.0.1:3334/callback'
-  ].filter(Boolean);
+  console.log(`[Higgsfield OAuth] Tentando troca: redirect_uri=${redirectUri}, verifier=${verifier ? 'PRESENTE' : 'AUSENTE'}`);
+
+  const tokenParams = {
+    grant_type: 'authorization_code',
+    client_id: HIGGSFIELD_CLIENT_ID,
+    code: authCode,
+    redirect_uri: redirectUri
+  };
+  if (verifier) tokenParams.code_verifier = verifier;
 
   let tokenRes = null;
-  let lastError = null;
-
-  for (const red of [...new Set(redirectCandidates)]) {
-    try {
-      const tokenParams = {
-        grant_type: 'authorization_code',
-        client_id: HIGGSFIELD_CLIENT_ID,
-        code: authCode,
-        redirect_uri: red
-      };
-      if (verifier) tokenParams.code_verifier = verifier;
-
-      tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', new URLSearchParams(tokenParams).toString(), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        timeout: 10000
-      });
-      if (tokenRes?.data?.access_token) {
-        console.log(`[Higgsfield OAuth] Sucesso na troca de token com redirect: ${red}`);
-        break;
-      }
-    } catch (err) {
-      lastError = err;
-    }
+  try {
+    tokenRes = await axios.post('https://clerk.higgsfield.ai/oauth/token', new URLSearchParams(tokenParams).toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000
+    });
+    console.log(`[Higgsfield OAuth] Sucesso na troca de token com redirect: ${redirectUri}`);
+  } catch (err) {
+    console.error(`[Higgsfield OAuth] Erro na troca (${redirectUri}):`, err.response?.data || err.message);
+    throw err;
   }
 
   if (!tokenRes?.data?.access_token) {
@@ -1266,12 +1272,10 @@ app.post(['/api/higgsfield/connect/:id/callback', '/api/auth/higgsfield/:id/call
     }
 
     if (authCode) {
+      const fromState = extractPkceFromState(authState);
       const session = getPkceSession(authState) || loginSession;
-      let verifier = session?.verifier;
-      if (!verifier && authState && authState.startsWith('hf_v1_')) {
-        verifier = authState.slice(6);
-      }
-      const redirectUri = detectedRedirect || session?.redirectUri || 'http://localhost:8765/callback';
+      let verifier = fromState?.verifier || session?.verifier;
+      const redirectUri = fromState?.redirectUri || detectedRedirect || session?.redirectUri || 'http://localhost:8765/callback';
       const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, authState);
       return res.json({ signedIn: true, login: { id: loginId, status: 'done' }, me: acc, ...acc });
     }
@@ -1591,14 +1595,13 @@ function startHiggsfieldCallbackServer(port = 8765) {
           return res.end('<h2>Código de autorização não recebido</h2><p>Tente novamente.</p>');
         }
 
+        const fromState = extractPkceFromState(state);
         const session = getPkceSession(state) || currentLogin;
-        let verifier = session?.verifier;
-        if (!verifier && state && state.startsWith('hf_v1_')) {
-          verifier = state.slice(6);
-        }
+        const verifier = fromState?.verifier || session?.verifier;
+        const redirectUri = fromState?.redirectUri || session?.redirectUri || `http://localhost:${port}/callback`;
 
         try {
-          const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, session?.redirectUri || `http://localhost:${port}/callback`, state);
+          const acc = await exchangeCodeForHiggsfieldAccount(authCode, verifier, redirectUri, state);
 
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           return res.end(`
@@ -1631,9 +1634,9 @@ function startHiggsfieldCallbackServer(port = 8765) {
             </html>
           `);
         } catch (authErr) {
-          console.error(`[OAuth Listener ${port}] Erro na troca:`, authErr.message);
+          console.error(`[OAuth Listener ${port}] Erro na troca:`, authErr.response?.data || authErr.message);
           res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-          return res.end(`<h2>Erro na conexão com Higgsfield</h2><p>${authErr.message}</p>`);
+          return res.end(`<h2>Erro na conexão com Higgsfield</h2><p>${authErr.response?.data?.error_description || authErr.message}</p>`);
         }
       }
       res.writeHead(404);

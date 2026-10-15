@@ -118,7 +118,7 @@ function HiggsfieldSignIn() {
           ${latePaste ? html`<span class="small dim">Se você já tem o endereço da página que não abriu, cole aqui mesmo assim.</span>
             <${CallbackPaste} key=${login.id} busy=${busy} onPaste=${url => act(() => signinCallback(login.id, url))} onBad=${setErr} />` : null}
         </div>`}
-      ${message ? html`<div class="warnbox">${message}</div>` : null}
+      ${message ? html`<div class="warnbox stack" style="gap:8px"><span>${message}</span>${step === 'login' ? html`<button class="btn btn--sm btn--butter" onClick=${() => { setErr(null); signinCancel(login?.id).then(() => start()); }}>Reiniciar login do Higgsfield</button>` : null}</div>` : null}
     </div>
   </section>`
 }
@@ -637,7 +637,7 @@ export function HiggsfieldPanel() {
       ${body}
       ${note ? html`<div class="small dim hf-note">${note}</div>` : null}
       ${showFailed ? html`<div class="warnbox">${failed}</div>` : null}
-      ${err ? html`<div class="warnbox">${err}</div>` : null}
+      ${err ? html`<div class="warnbox stack" style="gap:8px"><span>${err}</span>${step === 'login' ? html`<button class="btn btn--sm btn--butter" onClick=${() => { setErr(null); higgsfieldCancel(login?.id).then(() => connect()); }}>Reiniciar login do Higgsfield</button>` : null}</div>` : null}
     </div></div>
   </section>`
 }
