@@ -75,6 +75,32 @@ server.listen(0, '127.0.0.1', async () => {
       })`, awaitPromise: true, returnByValue: true });
       console.log('Two-character UI:', chosen.result?.result?.value);
     }
+    if (process.argv.includes('--verify-lite')) {
+      const verified = await send('Runtime.evaluate', { expression: `(async () => {
+        const free = [...document.querySelectorAll('.stepbox')].find(el => el.textContent.includes('Usar somente gerações grátis'));
+        const disabled = [...document.querySelectorAll('button.gen-btn')][0]?.disabled;
+        const model = [...document.querySelectorAll('button.sel')].find(el => el.textContent.includes('Modelo'));
+        model?.click();
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return JSON.stringify({ freeModeVisible: !!free, generateDisabled: disabled, liteVisible: document.body.textContent.includes('Higgsfield Genjutsu Lite'), modelButton: !!model, stepboxes: document.querySelectorAll('.stepbox').length });
+      })()`, awaitPromise: true, returnByValue: true });
+      const details = JSON.parse(verified.result?.result?.value || '{}');
+      console.log('Genjutsu Lite UI:', details);
+      if (!details.freeModeVisible || !details.generateDisabled || !details.liteVisible) process.exitCode = 1;
+      if (process.argv.includes('--verify-lite-quote')) {
+        const selected = await send('Runtime.evaluate', { expression: `(() => {
+          const item = [...document.querySelectorAll('.pop__item')].find(el => el.textContent.includes('Higgsfield Genjutsu Lite'));
+          item?.click();
+          return !!item;
+        })()`, returnByValue: true });
+        if (!selected.result?.result?.value) throw new Error('Could not select Genjutsu Lite');
+        await new Promise(resolve => setTimeout(resolve, 20000));
+        const quote = await send('Runtime.evaluate', { expression: `JSON.stringify({ liteSelected: document.body.textContent.includes('Higgsfield Genjutsu Lite · 1080p'), error: [...document.querySelectorAll('.warnbox')].map(el => el.textContent).filter(Boolean).slice(0,3), cost: document.querySelector('.gen-btn__cost')?.textContent, freeDisabled: document.querySelector('.gen-btn')?.disabled })`, returnByValue: true });
+        const value = JSON.parse(quote.result?.result?.value || '{}');
+        console.log('Lite quote (no generation):', value);
+        if (!value.liteSelected || !value.cost || !value.freeDisabled || value.error.some(text => /cotação|erro|falhou/i.test(text))) process.exitCode = 1;
+      }
+    }
     const state = await send('Runtime.evaluate', { expression: 'JSON.stringify({title:document.title,appLength:document.querySelector("#app")?.innerHTML.length,body:document.body.innerText.slice(0,200)})', returnByValue: true });
     console.log('State:', state.result?.result?.value);
     for (const error of errors.slice(0, 12)) console.log(error.slice(0, 1000));
