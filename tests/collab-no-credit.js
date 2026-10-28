@@ -21,14 +21,22 @@ fs.writeFileSync(path.join(dir, 'data', 'characters.json'), JSON.stringify([
   { id: 'right', userId: 'owner', name: 'Direita', images: [{ id: 'img-right', url: img, useAsRef: true }] }
 ]));
 fs.writeFileSync(path.join(dir, 'data', 'clips.json'), JSON.stringify([
-  { id: 'clip', userId: 'owner', name: 'Duas pessoas.mp4', url: '/api/uploads/unused.mp4', info: { duration: 11 } }
+  { id: 'clip', userId: 'owner', name: 'Duas pessoas.mp4', url: '/api/uploads/unused.mp4', info: { duration: 11 } },
+  { id: 'long-clip', userId: 'owner', name: 'Vídeo longo.mp4', url: '/api/uploads/unused.mp4', info: { duration: 16 } }
 ]));
 for (const name of ['jobs.json', 'projects.json', 'reference_images.json']) fs.writeFileSync(path.join(dir, 'data', name), '[]');
 fs.writeFileSync(path.join(dir, 'data', 'sessions.json'), '{}');
 
 let providerCalls = 0;
+let costCalls = 0;
 let submitted;
 require('../higgsfieldCli').invoke = async (args, session, media) => {
+  if (args[0] === 'generate' && args[1] === 'cost') {
+    costCalls++;
+    assert.equal(args[2], 'hf_mult_motion_control_flash');
+    assert.equal(media.length, 3);
+    return { credits: 32 };
+  }
   providerCalls++;
   submitted = { args, mediaCount: media.length };
   return [crypto.randomUUID()];
@@ -66,6 +74,23 @@ async function call(route, body) {
     assert.equal(submitted.mediaCount, 3);
     assert.ok(submitted.args.join(' ').includes('@Image 1'));
     assert.ok(submitted.args.join(' ').includes('@Image 2'));
+    const lite = { ...input, swapModels: ['hf-genjutsu-lite-720p'] };
+    const liteEstimate = await call('/api/estimate', lite);
+    assert.equal(liteEstimate.status, 200, JSON.stringify(liteEstimate.data));
+    assert.equal(liteEstimate.data.credits, 32);
+    const freeOnly = await call('/api/takes', { ...lite, freeOnly: true, expected_total_credits: 32 });
+    assert.equal(freeOnly.status, 409);
+    assert.equal(providerCalls, 1);
+    const liteResponse = await call('/api/takes', { ...lite, expected_total_credits: 32 });
+    assert.equal(liteResponse.status, 200, JSON.stringify(liteResponse.data));
+    assert.equal(liteResponse.data.jobs.length, 1);
+    assert.equal(liteResponse.data.jobs[0].price_credits, 32);
+    assert.equal(submitted.args[2], 'hf_mult_motion_control_flash');
+    assert.equal(providerCalls, 2);
+    assert.equal(costCalls, 2);
+    const invalidLite = await call('/api/estimate', { ...lite, clipIds: ['long-clip'] });
+    assert.equal(invalidLite.status, 400);
+    assert.equal(costCalls, 2);
     console.log('Two characters -> one provider request, one 77-credit quote (mocked; no credits spent).');
   } finally {
     server.close();

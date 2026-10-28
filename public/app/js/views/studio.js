@@ -13,7 +13,7 @@ import { PaywallModal, PaywallBand, paywallFrom, withPaywall, lockedJob, openPay
 const BASE_CFG = {
   swapModels: [], swapOpts: {}, frameModel: null, frameOpts: {},
   upscaleModel: null, upscaleOpts: {}, prompt: '', promptOn: false,
-  grain: 0, keepAudio: true, instagram: false, splitLong: true, compare: false, v: 8, upscaleAuto: false, collab: false, maxSeconds: null,
+  grain: 0, keepAudio: true, instagram: false, splitLong: true, compare: false, v: 9, upscaleAuto: false, collab: false, maxSeconds: null, freeOnly: true,
 }
 // Character Online: duração do vídeo (takes.max_seconds no servidor): null = vídeo completo; CUT_S = só os primeiros
 // 30 s (o servidor corta o vídeo e o som antes de dividir; 30 s vão numa parte só, cobrada como 30 s)
@@ -121,7 +121,7 @@ function ModelSelect({ cfg, setCfg }) {
             const on = cfg.swapModels.some(id => fam.some(x => x.id === id))
             return html`<div key=${top.family} class=${`pop__item ${on ? 'is-on' : ''} ${fam.some(m => m.configured) ? '' : 'is-off'}`} onClick=${() => pick(fam)}>
               <div class="pop__name">${cfg.compare ? html`<input type="checkbox" checked=${on} readonly style="accent-color:var(--accent)" />` : null}${top.familyLabel} ${modelBadges({ ...top, badges: (top.badges || []).slice(0, 2) })}</div>
-              <span class="pop__price">${top.status === 'test' ? 'grátis' : `${cr(modelCreditsPerSecond(top))}/s`}</span>
+              <span class="pop__price">${top.status === 'test' ? 'grátis' : top.family === 'genjutsu-lite' ? 'cotação oficial' : `${cr(modelCreditsPerSecond(top))}/s`}</span>
               <div class="pop__desc">${cfg.collab ? html`<b style=${{ color: (top.limits?.maxCast || 1) > 1 ? 'var(--mint)' : 'var(--coral-l)' }}>${(top.limits?.maxCast || 1) > 1 ? `collab até ${top.limits.maxCast}` : 'não faz collab'}</b> · ` : null}${top.description}${fam.length > 1 ? ` · ${fam.map(x => x.quality).join(' / ')}` : ''} <span class="dim">· ${top.providerLabel}</span></div>
             </div>`
           })}
@@ -156,9 +156,9 @@ function QualitySelect({ cfg, setCfg }) {
     return html`<${PopSelect} label="Qualidade" value=${m.id} onChange=${id => setCfg({ ...cfg, swapModels: [id] })}
       options=${fam.map(x => ({
         value: x.id,
-        label: `${x.quality} (${modelCreditsPerSecond(x)} cr/s)`,
+        label: x.family === 'genjutsu-lite' ? `${x.quality} (cotação oficial)` : `${x.quality} (${modelCreditsPerSecond(x)} cr/s)`,
         desc: x.id.includes('720p') ? 'Mais rápido e econômico' : 'Resolução máxima Full HD',
-        price: `${cr(modelCreditsPerSecond(x))}/s`,
+        price: x.family === 'genjutsu-lite' ? 'ver preço abaixo' : `${cr(modelCreditsPerSecond(x))}/s`,
         disabled: !x.configured,
         disabledMsg: `Falta a chave do ${x.providerLabel}`
       }))} />`
@@ -700,6 +700,7 @@ function DurationPick({ clips, cfg, setCfg, est, count, limits }) {
 
 function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   const [est, setEst] = useState(null)
+  const [estError, setEstError] = useState(null)
   const [busy, setBusy] = useState(false)
   // Character Online: conta Higgsfield do aluno: aviso de conectar / sem créditos (com o botão da ação) e orçamento nela
   const [hfErr, setHfErr] = useState(null)
@@ -740,6 +741,7 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
       upscaleModel: cfg.upscaleModel, upscaleOpts: cfg.upscaleOpts,
       prompt: cfg.promptOn && (cfg.prompt || '').trim() ? cfg.prompt.trim() : null,
       splitLong: cfg.splitLong,
+      freeOnly: !!cfg.freeOnly,
       maxSeconds: cut,
       finish: { grain: cfg.grain, keepAudio: cfg.keepAudio, instagram: cfg.instagram },
     }
@@ -749,9 +751,11 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   // a duração e clicar logo em Gerar não manda o preço da outra escolha)
   const estKey = JSON.stringify([chars, clips, cfg.swapModels, collab, cut])
   useEffect(() => {
-    if (!clips.length || !cfg.swapModels.length) { setEst(null); return }
+    if (!clips.length || !cfg.swapModels.length) { setEst(null); setEstError(null); return }
     const key = estKey
-    const t = setTimeout(() => api.post('/api/estimate', { ...body(), characterIds: chars.length ? chars : ['x'] }).then(r => setEst({ ...r, key })).catch(() => setEst(null)), 250)
+    setEst(null)
+    setEstError(null)
+    const t = setTimeout(() => api.post('/api/estimate', { ...body(), characterIds: chars.length ? chars : ['x'] }).then(r => setEst({ ...r, key })).catch(e => { setEst(null); setEstError(e.message) }), 250)
     return () => clearTimeout(t)
   }, [JSON.stringify(cfg), chars.join(), clips.join(), JSON.stringify(castMeta), hf?.mode, hf?.status, hf?.credits, hf?.available])
   useEffect(() => setHfErr(null), [estKey])
@@ -770,7 +774,7 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
   }
 
   async function go() {
-    if (!count || busy || castBad || castMultipleOutputs || castShort || short) return
+    if (!count || busy || castBad || castMultipleOutputs || castShort || short || cfg.freeOnly) return
     setHfErr(null)
     if (hfBlock) return
     const missing = cfg.swapModels.map(modelById).filter(m => m && !m.configured)
@@ -786,7 +790,10 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
       toast('Aguarde o orçamento aparecer antes de gerar.', 'err')
       return
     }
-    if (collab && !(await confirmDialog(`Gerar ${count === 1 ? 'um vídeo' : `${count} vídeos`} com ${chars.length} personagens juntos, usando ${seen ?? 'os créditos mostrados'} créditos do seu Higgsfield? Confira a posição de cada pessoa no passo 1.`, { ok: 'Confirmar geração', no: 'Voltar' }))) {
+    const confirmation = collab
+      ? `Gerar ${count === 1 ? 'um vídeo' : `${count} vídeos`} com ${chars.length} personagens juntos, usando ${seen} créditos do seu Higgsfield? Confira a posição de cada pessoa no passo 1.`
+      : `Gerar ${count === 1 ? 'um vídeo' : `${count} vídeos`}, usando ${seen} créditos do seu Higgsfield?`;
+    if (!(await confirmDialog(confirmation, { ok: 'Confirmar cobrança', no: 'Voltar' }))) {
       setBusy(false)
       return
     }
@@ -829,7 +836,13 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
     <div class="panel__body stack" style="gap:10px">
       <${ModelSelect} cfg=${cfg} setCfg=${setCfg} />
       <${QualitySelect} cfg=${cfg} setCfg=${setCfg} />
+      <div class="stepbox" style="gap:7px">
+        <div class="row"><span class="label grow">Usar somente gerações grátis</span><${Toggle} checked=${!!cfg.freeOnly} onChange=${v => setCfg({ ...cfg, freeOnly: v })} label="" /></div>
+        <span class="small dim">Quando ativo, este Estúdio não envia pedidos cobrados. As gerações grátis do Genjutsu Lite funcionam somente no site Higgsfield.</span>
+        ${cfg.freeOnly ? html`<a class="small" href="https://higgsfield.ai/" target="_blank" rel="noopener noreferrer">Abrir Higgsfield para usar as gerações grátis ↗</a>` : html`<span class="small dim">Desativado: o preço mostrado abaixo será cobrado dos créditos da conta conectada.</span>`}
+      </div>
       <${DurationPick} clips=${clips} cfg=${cfg} setCfg=${setCfg} est=${est} count=${count} limits=${swap?.limits} />
+      ${estError ? html`<div class="warnbox">${estError}</div>` : null}
       ${castBad ? html`<div class="warnbox">${chars.length > castMax ? `Este modelo aceita até ${castMax} personagens no mesmo vídeo.` : 'Escolha uma posição diferente para cada personagem no passo 1.'}</div>` : null}
       ${castMultipleOutputs ? html`<div class="warnbox">Para gerar um único vídeo com o elenco, escolha apenas um vídeo base e uma qualidade.</div>` : null}
       ${castShort ? html`<div class="warnbox">Collab ligado: escolha pelo menos 2 personagens no passo 1 (ou desligue o collab).</div>` : null}
@@ -851,8 +864,8 @@ function GenerateCol({ chars, clips, cfg, setCfg, castMeta }) {
     <div class="panel__foot stack" style="gap:8px">
       <span class="small muted">${ready ? `${collab ? `${chars.length} personagens no mesmo vídeo` : '1 personagem'} × ${plural(clips.length, 'vídeo base', 'vídeos base')}${cfg.swapModels.length > 1 ? ` × ${cfg.swapModels.length} modelos` : ''}` : 'Escolha o personagem (1) e o vídeo (2)'}</span>
       ${ready && est && est.credits ? html`<span class="small dim" title=${own ? 'Cada segundo cobrado usa os créditos da sua conta Higgsfield' : 'Cada segundo cobrado usa os créditos do Higgsfield Genjutsu, sem acréscimo'}>${[estimateText(est), own ? ownBudgetText(est.credits, hfHave, hfBalance) : credits(est.credits)].filter(Boolean).join(' · ')}</span>` : null}
-      <button class="gen-btn" disabled=${!ready || busy || short || !!hfBlock || est?.key !== estKey} onClick=${go}>
-        ${busy ? 'Enviando...' : count > 1 ? `Gerar ${count} vídeos` : collab ? `Gerar 1 vídeo com ${chars.length} personagens` : 'Gerar'}
+      <button class="gen-btn" disabled=${!ready || busy || short || !!hfBlock || !!cfg.freeOnly || est?.key !== estKey} onClick=${go}>
+        ${cfg.freeOnly ? 'Somente grátis ativado' : busy ? 'Enviando...' : count > 1 ? `Gerar ${count} vídeos` : collab ? `Gerar 1 vídeo com ${chars.length} personagens` : 'Gerar'}
         ${est && est.credits ? html`<span class="gen-btn__cost" title=${own ? 'Créditos da sua conta Higgsfield que este pedido usa' : 'Créditos reservados ao gerar. Só são descontados quando o vídeo fica pronto; se ele for recusado ou der erro, voltam todos.'}>${cr(est.credits)}</span>` : null}
         <span class="kbd">⌘↵</span>
       </button>
@@ -929,6 +942,7 @@ export function Studio() {
     // v8: duração escolhida no Gerar ("Vídeo completo" ou "Primeiros 30 segundos"). O 40 da v6 nunca valeu no servidor
     // (o vídeo sempre foi inteiro): volta para o vídeo completo, sem surpresa
     if (saved.v < 8) { saved.maxSeconds = null; saved.v = 8 }
+    if (saved.v < 9) { saved.freeOnly = true; saved.v = 9 }
     const merged = { ...BASE_CFG, ...saved }
     merged.maxSeconds = cutOf(merged) // só 30 ou null
     if (saved.v !== from) savePref('studio2', merged) // grava a migração já na abertura

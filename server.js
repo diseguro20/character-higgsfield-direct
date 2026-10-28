@@ -523,7 +523,7 @@ app.get('/api/state', (req, res) => {
         configured: true,
         rank: 1,
         status: 'ready',
-        limits: { outputLongSide: 1920, maxClipSeconds: 60, maxDuration: 29.7, minDuration: 4, maxCast: 4 },
+        limits: { outputLongSide: 1920, maxClipSeconds: 30, maxDuration: 29.7, minDuration: 4, maxCast: 4 },
         credits_per_second: 20,
         badges: ['1080p', 'Genjutsu'],
         description: 'Troca de personagem com movimento e cena idênticos mantendo o áudio original',
@@ -542,12 +542,23 @@ app.get('/api/state', (req, res) => {
         configured: true,
         rank: 2,
         status: 'ready',
-        limits: { outputLongSide: 1280, maxClipSeconds: 60, maxDuration: 29.7, minDuration: 4, maxCast: 4 },
+        limits: { outputLongSide: 1280, maxClipSeconds: 30, maxDuration: 29.7, minDuration: 4, maxCast: 4 },
         credits_per_second: 7,
         badges: ['720p'],
         description: 'Troca de personagem mais rápida',
         docsUrl: 'https://higgsfield.ai'
       },
+      ...['720p', '1080p'].map((quality, index) => ({
+        id: `hf-genjutsu-lite-${quality}`,
+        family: 'genjutsu-lite', familyLabel: 'Higgsfield Genjutsu Lite',
+        label: `Higgsfield Genjutsu Lite ${quality}`,
+        provider: 'hfcli', providerLabel: 'Higgsfield', quality, step: 'swap',
+        configured: true, rank: 3 + index, status: 'ready',
+        limits: { outputLongSide: quality === '720p' ? 1280 : 1920, maxClipSeconds: 15, maxDuration: 15, minDuration: 4, maxCast: 4 },
+        badges: [quality, 'Lite'],
+        description: 'Versão econômica para vídeos de 4 a 15 s. Cotação oficial antes de gerar; pela CLI consome créditos.',
+        docsUrl: 'https://higgsfield.ai/creator-hub/help-center/tools/how-do-i-use-genjutsu'
+      })),
       {
         id: 'hf-character-image',
         family: 'image_gen',
@@ -1349,8 +1360,35 @@ app.delete('/api/projects/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+const GENJUTSU_MODELS = new Set(['hf-genjutsu-720p', 'hf-genjutsu-1080p', 'hf-genjutsu-lite-720p', 'hf-genjutsu-lite-1080p']);
+const liteModel = id => id?.startsWith('hf-genjutsu-lite-');
+const modelResolution = id => id?.endsWith('720p') ? '720p' : '1080p';
+const modelJobType = id => liteModel(id) ? 'hf_mult_motion_control_flash' : 'hf_mult_motion_control';
+const maxModelSeconds = id => liteModel(id) ? 15 : 30;
+function quotedCredits(value) {
+  const raw = typeof value === 'number' ? value : value?.credits ?? value?.cost_credits ?? value?.total_credits ?? value?.cost?.credits;
+  const amount = Number(raw);
+  if (!Number.isFinite(amount) || amount < 0) throw takeFailure('O Higgsfield não retornou uma cotação válida para Genjutsu Lite.', 502);
+  return amount;
+}
+async function quoteLite(req, session, characterIds, clipId, modelId) {
+  if (!session?.higgsfield?.connected) throw takeFailure('Conecte sua conta Higgsfield para consultar o preço do Lite.', 401);
+  const characters = characterIds.map(id => readJson(CHARACTERS_FILE, []).find(c => c.id === id && owns(req, c)));
+  const clip = readJson(CLIPS_FILE, []).find(c => c.id === clipId && owns(req, c));
+  if (!clip || !characters.length || characters.some(c => !c)) throw takeFailure('Selecione personagens e vídeo válidos.');
+  const refs = characters.length > 1 ? characters.map(character => {
+    const images = (character.images || []).filter(image => image.useAsRef);
+    return images.find(image => image.id === character.cover) || images[0];
+  }) : (characters[0].images || []).filter(image => image.useAsRef);
+  if (refs.some(ref => !ref)) throw takeFailure('Cada personagem precisa de uma foto de referência.');
+  const media = [takeMedia(req, clip.url, '--video-references', 0),
+    ...refs.map((image, index) => takeMedia(req, image.url, '--image-references', index))];
+  const result = await higgsfieldCli.invoke(['generate', 'cost', modelJobType(modelId), '--resolution', modelResolution(modelId)], session, media);
+  return quotedCredits(result);
+}
 // 7. ORÇAMENTO (ESTIMATE): Calcula os créditos e partes do vídeo
-app.post('/api/estimate', (req, res) => {
+app.post('/api/estimate', async (req, res) => {
+  try {
   const { characterIds, clipIds, swapModels, cast } = req.body || {};
   const clips = readJson(CLIPS_FILE, []);
   const selected = Array.isArray(clipIds) ? clipIds.map(id => clips.find(c => c.id === id && owns(req, c))) : [];
@@ -1363,14 +1401,17 @@ app.post('/api/estimate', (req, res) => {
       || !['left', 'right', 'middle', 'first', 'second'].includes(member.target))
     || new Set(cast.map(member => member.target)).size !== cast.length)) return res.status(400).json({ error: 'Defina uma posição diferente para cada personagem do elenco.' });
   const models = Array.isArray(swapModels) && swapModels.length ? swapModels : ['hf-genjutsu-1080p'];
-  if (models.some(id => !['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(id))) return res.status(400).json({ error: 'Qualidade de vídeo inválida.' });
+  if (models.some(id => !GENJUTSU_MODELS.has(id))) return res.status(400).json({ error: 'Qualidade de vídeo inválida.' });
+  if (models.some(liteModel) && (selected.length !== 1 || models.length !== 1 || !Array.isArray(characterIds) || !characterIds.length)) return res.status(400).json({ error: 'No Lite, escolha um vídeo base e uma qualidade por vez.' });
   const durations = selected.map(clip => Math.ceil(Number(clip.info?.duration)));
-  if (durations.some(duration => !Number.isFinite(duration) || duration < 4 || duration > 30)) return res.status(400).json({ error: 'O Genjutsu aceita vídeos de 4 a 30 segundos.' });
+  if (durations.some(duration => !Number.isFinite(duration) || duration < 4 || duration > Math.min(...models.map(maxModelSeconds)))) return res.status(400).json({ error: models.some(liteModel) ? 'O Genjutsu Lite aceita vídeos de 4 a 15 segundos.' : 'O Genjutsu aceita vídeos de 4 a 30 segundos.' });
   const session = getSession(req);
   const userCredits = session?.higgsfield?.credits || 0;
   const characterCount = combined ? 1 : Math.max(1, Array.isArray(characterIds) ? characterIds.length : 1);
   const duration = durations.reduce((total, seconds) => total + seconds, 0);
-  const credits = characterCount * models.reduce((total, id) => total + durations.reduce((sum, seconds) => sum + seconds * (id === 'hf-genjutsu-720p' ? 7 : 20), 0), 0);
+  const credits = models.some(liteModel)
+    ? await quoteLite(req, session, characterIds, clipIds[0], models[0]) * characterCount
+    : characterCount * models.reduce((total, id) => total + durations.reduce((sum, seconds) => sum + seconds * (id === 'hf-genjutsu-720p' ? 7 : 20), 0), 0);
 
   res.json({
     mode: 'own',
@@ -1383,6 +1424,7 @@ app.post('/api/estimate', (req, res) => {
       { max_seconds: 30, duration_s: duration, parts_count: selected.length, credits }
     ]
   });
+  } catch (error) { res.status(error.status || 502).json({ error: error.message }); }
 });
 
 // 8. TAKES: envio assíncrono ao Genjutsu e consulta do resultado real
@@ -1417,7 +1459,7 @@ function takeMedia(req, mediaUrl, flag, index) {
     } };
 }
 
-async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapModels, cast }) {
+async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapModels, cast, quotedCost }) {
   const session = getSession(req);
   if (!session?.higgsfield?.connected) throw takeFailure('Conecte sua conta Higgsfield para gerar vídeos.', 401);
   if (!session.higgsfield.token || !session.higgsfield.refreshToken) throw takeFailure('Conecte novamente sua conta Higgsfield para gerar.', 401);
@@ -1433,9 +1475,9 @@ async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapMode
     throw takeFailure('Defina uma posição diferente para cada personagem antes de gerar o vídeo com o elenco.');
   }
   const modelId = swapModels?.[0] || 'hf-genjutsu-1080p';
-  if (!['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(modelId)) throw takeFailure('Qualidade de vídeo inválida.');
+  if (!GENJUTSU_MODELS.has(modelId)) throw takeFailure('Qualidade de vídeo inválida.');
   const duration = Number(clip.info?.duration);
-  if (!Number.isFinite(duration) || duration < 4 || duration > 30) throw takeFailure('O Genjutsu aceita vídeos de 4 a 30 segundos.');
+  if (!Number.isFinite(duration) || duration < 4 || duration > maxModelSeconds(modelId)) throw takeFailure(liteModel(modelId) ? 'O Genjutsu Lite aceita vídeos de 4 a 15 segundos.' : 'O Genjutsu aceita vídeos de 4 a 30 segundos.');
   const refs = combined ? characters.map(item => {
     const available = (item.images || []).filter(image => image.useAsRef);
     return available.find(image => image.id === item.cover) || available[0];
@@ -1457,7 +1499,8 @@ async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapMode
   session.higgsfield.credits = balance.credits;
   session.higgsfield.available = balance.credits;
   setSessionCookie(res, session);
-  const expectedCost = Math.ceil(duration) * (modelId === 'hf-genjutsu-720p' ? 7 : 20);
+  const expectedCost = liteModel(modelId) ? quotedCost : Math.ceil(duration) * (modelId === 'hf-genjutsu-720p' ? 7 : 20);
+  if (!Number.isFinite(expectedCost) || expectedCost < 0) throw takeFailure('Confira o orçamento oficial antes de gerar o Lite.', 409);
   if (balance.credits < expectedCost) throw takeFailure(`Créditos insuficientes no Higgsfield: são necessários ${expectedCost}.`, 409);
   const jobs = readJson(JOBS_FILE, []);
   const submittedAt = new Date().toISOString();
@@ -1475,9 +1518,9 @@ async function createTakeJob(req, res, { characterIds, clipIds, prompt, swapMode
   await requestStore.getStore()?.lastWrite;
   try {
     const previousToken = session.higgsfield.token;
-    const result = await higgsfieldCli.invoke(['generate', 'create', 'hf_mult_motion_control',
+    const result = await higgsfieldCli.invoke(['generate', 'create', modelJobType(modelId),
       '--prompt', generationPrompt,
-      '--resolution', modelId === 'hf-genjutsu-720p' ? '720p' : '1080p'], session, media);
+      '--resolution', modelResolution(modelId)], session, media);
     const submitted = Array.isArray(result) ? result[0] : result;
     const providerId = typeof submitted === 'string' ? submitted.trim() : submitted?.id || submitted?.job_id;
     if (!providerId || !/^[a-f0-9-]{36}$/i.test(providerId)) throw new Error('O Higgsfield não retornou o identificador do vídeo.');
@@ -1547,28 +1590,33 @@ app.post('/api/takes', async (req, res) => {
     const characterIds = Array.isArray(input.characterIds) ? [...new Set(input.characterIds)] : [];
     const clipIds = Array.isArray(input.clipIds) ? [...new Set(input.clipIds)] : [];
     const swapModels = Array.isArray(input.swapModels) && input.swapModels.length ? [...new Set(input.swapModels)] : ['hf-genjutsu-1080p'];
+    if (input.freeOnly === true) throw takeFailure('Modo somente grátis ativo. As gerações gratuitas do Higgsfield só podem ser usadas em higgsfield.ai; nenhum pedido foi enviado.', 409);
     if (!characterIds.length || !clipIds.length) throw takeFailure('Selecione um personagem e um vídeo base no Estúdio.');
     const combined = characterIds.length > 1;
     const cast = combined ? input.cast : null;
     if (combined && (clipIds.length !== 1 || swapModels.length !== 1)) {
       throw takeFailure('Para o elenco, selecione um vídeo base e uma qualidade por vez.', 409);
     }
+    if (swapModels.some(liteModel) && (clipIds.length !== 1 || swapModels.length !== 1)) throw takeFailure('No Lite, escolha um vídeo base e uma qualidade por vez.', 409);
     if (combined && (!Array.isArray(cast) || cast.length !== characterIds.length || cast.length > 4
       || cast.some((member, index) => !member || member.characterId !== characterIds[index]
         || !['left', 'right', 'middle', 'first', 'second'].includes(member.target))
       || new Set(cast.map(member => member.target)).size !== cast.length)) {
       throw takeFailure('Defina posições diferentes para gerar um único vídeo com os personagens selecionados.', 409);
     }
-    if (combined && !Number.isFinite(Number(input.expected_total_credits))) {
-      throw takeFailure('Confira o orçamento para gerar um único vídeo com o elenco.', 409);
+    if (input.expected_total_credits == null || !Number.isFinite(Number(input.expected_total_credits))) throw takeFailure('Confira o orçamento antes de gerar.', 409);
+    const selectedClips = clipIds.map(id => readJson(CLIPS_FILE, []).find(item => item.id === id && owns(req, item)));
+    if (selectedClips.some(clip => !clip || !Number.isFinite(Number(clip.info?.duration)) || Number(clip.info.duration) < 4 || Number(clip.info.duration) > Math.min(...swapModels.map(maxModelSeconds)))) {
+      throw takeFailure(swapModels.some(liteModel) ? 'O Genjutsu Lite aceita vídeos de 4 a 15 segundos.' : 'O Genjutsu aceita vídeos de 4 a 30 segundos.');
     }
+    const liteQuote = swapModels.some(liteModel) ? await quoteLite(req, session, characterIds, clipIds[0], swapModels[0]) : null;
     const quote = clipIds.reduce((total, id) => {
       const clip = readJson(CLIPS_FILE, []).find(item => item.id === id && owns(req, item));
       const duration = Number(clip?.info?.duration);
-      if (!clip || !Number.isFinite(duration) || duration < 4 || duration > 30) throw takeFailure('O Genjutsu aceita vídeos de 4 a 30 segundos.');
+      if (!clip || !Number.isFinite(duration) || duration < 4 || duration > Math.min(...swapModels.map(maxModelSeconds))) throw takeFailure(swapModels.some(liteModel) ? 'O Genjutsu Lite aceita vídeos de 4 a 15 segundos.' : 'O Genjutsu aceita vídeos de 4 a 30 segundos.');
       return total + swapModels.reduce((sum, model) => {
-        if (!['hf-genjutsu-720p', 'hf-genjutsu-1080p'].includes(model)) throw takeFailure('Qualidade de vídeo inválida.');
-        return sum + Math.ceil(duration) * (model === 'hf-genjutsu-720p' ? 7 : 20);
+        if (!GENJUTSU_MODELS.has(model)) throw takeFailure('Qualidade de vídeo inválida.');
+        return sum + (liteModel(model) ? liteQuote : Math.ceil(duration) * (model === 'hf-genjutsu-720p' ? 7 : 20));
       }, 0);
     }, 0) * (combined ? 1 : characterIds.length);
     if (Number.isFinite(Number(input.expected_total_credits)) && input.expected_total_credits != null && Number(input.expected_total_credits) !== quote) {
@@ -1580,7 +1628,7 @@ app.post('/api/takes', async (req, res) => {
         for (const modelId of swapModels) {
           try {
             jobs.push(await createTakeJob(req, res, { characterIds: combined ? characterIds : [characterId],
-              clipIds: [clipId], prompt: input.prompt, swapModels: [modelId], cast }));
+              clipIds: [clipId], prompt: input.prompt, swapModels: [modelId], cast, quotedCost: liteQuote }));
           } catch (error) {
             if (!jobs.length) throw error;
             return res.json({ jobs, error: `Após ${jobs.length} envio(s), o próximo falhou: ${error.message}` });
